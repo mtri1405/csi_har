@@ -1,0 +1,17 @@
+# Core data processing
+numpy
+pandas
+scipy
+statsmodels
+
+# Serial communication
+pyserial
+
+# CSI visualization tool
+PyQt5
+pyqtgraph
+matplotlib
+
+# CNN training and inference
+scikit-learn
+torch

@@ -1,0 +1,11 @@
+*.csv
+venv/
+__pycache__/
+*.py[cod]
+
+Data/
+*.npz
+*.pth
+
+.vscode/
+.idea/

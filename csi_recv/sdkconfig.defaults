@@ -1,0 +1,36 @@
+# Board RX (csi_recv) - ESP32 rev0, ESP-IDF 6.1.0
+#
+# Tick 10 ms du cho RX: task ghi UART va task log deu chay > 10 Hz.
+# Bo TX phai dung CONFIG_FREERTOS_HZ=1000 de phat dung 100 Hz.
+CONFIG_IDF_TARGET="esp32"
+CONFIG_FREERTOS_HZ=100
+
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+CONFIG_BOOTLOADER_LOG_LEVEL_INFO=y
+
+# Console dung chung UART0 voi dong CSV -> baud phai bang CONFIG_CSI_UART_BAUD
+#
+# Luu y: ESP-IDF 6.1 chi cho phep dat CONFIG_ESP_CONSOLE_UART_BAUDRATE khi
+# console la "Custom UART" (khi dung UART mac dinh, gia tri tu sdkconfig
+# bi kconfgen bo qua va luon lui ve 115200). Custom UART van dung chan TX=GPIO1
+# RX=GPIO3 cua UART0, khong doi vi tri ket noi.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
+CONFIG_ESPTOOLPY_MONITOR_BAUD=2000000
+
+# Task WDT: phai chong watchdog khi task co the bi treo
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# Cac goi ESP-NOW den 100 Hz kem goi cua AP -> phong phong lon hon mac dinh
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+
+# Bat buoc: khong bat option nay thi esp_wifi_set_csi_config() tra ESP_FAIL
+# (driver in "CSI not enabled in menuconfig!") va app abort o csi_config_init().
+# Ton ~CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM KB RAM.
+CONFIG_ESP_WIFI_CSI_ENABLED=y

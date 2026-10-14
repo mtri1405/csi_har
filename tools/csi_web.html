@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSI Action Lab</title>
+  <style>
+    :root {
+      --bg: #08111f;
+      --panel: #101d30;
+      --panel-light: #16263d;
+      --border: #243b5a;
+      --text: #e9f2ff;
+      --muted: #8da4c2;
+      --blue: #42a5ff;
+      --green: #3cdb9a;
+      --orange: #ffb454;
+      --red: #ff6f89;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font: 15px/1.5 "Segoe UI", Arial, sans-serif;
+      background: radial-gradient(circle at 10% 0%, #173c63 0, transparent 34%), var(--bg);
+    }
+    .shell { max-width: 1280px; margin: 0 auto; padding: 28px; }
+    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 24px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: clamp(28px, 5vw, 44px); letter-spacing: -.04em; }
+    h2 { font-size: 17px; margin-bottom: 16px; }
+    .subtitle { color: var(--muted); margin-top: 6px; max-width: 680px; }
+    .badge { border: 1px solid var(--border); background: #102944; color: var(--green); border-radius: 999px; padding: 8px 13px; white-space: nowrap; }
+    .layout { display: grid; grid-template-columns: minmax(320px, 390px) 1fr; gap: 20px; }
+    .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border); border-radius: 18px; padding: 20px; box-shadow: 0 18px 45px #0003; }
+    .stack { display: grid; gap: 14px; }
+    label { color: var(--muted); font-size: 13px; display: grid; gap: 6px; }
+    input, select {
+      width: 100%; border: 1px solid var(--border); background: var(--panel-light); color: var(--text);
+      border-radius: 10px; padding: 11px 12px; font: inherit; outline: none;
+    }
+    input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px #42a5ff22; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    button {
+      border: 0; border-radius: 10px; padding: 11px 12px; color: var(--text); background: #244263;
+      font: inherit; font-weight: 600; cursor: pointer; transition: .15s ease;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.15); transform: translateY(-1px); }
+    button:disabled { opacity: .42; cursor: not-allowed; }
+    button.primary { background: linear-gradient(135deg, #278cf0, #2767ca); }
+    button.success { background: linear-gradient(135deg, #229f73, #176b59); }
+    button.warning { background: linear-gradient(135deg, #c17e2d, #8f5420); }
+    button.danger { background: linear-gradient(135deg, #bd526a, #803548); }
+    .countdown { min-height: 42px; display: grid; place-items: center; color: var(--orange); font-size: 27px; font-weight: 700; }
+    .status-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border-radius: 10px; background: var(--panel-light); }
+    .status-dot { width: 10px; height: 10px; display: inline-block; border-radius: 50%; background: var(--muted); margin-right: 8px; }
+    .status-dot.running { background: var(--green); box-shadow: 0 0 14px var(--green); }
+    .status-dot.error { background: var(--red); }
+    .log { height: 470px; overflow: auto; margin: 0; padding: 16px; color: #cfe3ff; background: #07101d; border: 1px solid var(--border); border-radius: 12px; white-space: pre-wrap; word-break: break-word; font: 12px/1.65 Consolas, monospace; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
+    .steps { display: grid; gap: 10px; margin-top: 20px; }
+    .step { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+    .step span { width: 24px; height: 24px; display: grid; place-items: center; color: var(--text); border-radius: 50%; background: #244263; font-size: 12px; }
+    @media (max-width: 820px) {
+      .shell { padding: 18px; } header { display: block; } .badge { display: inline-block; margin-top: 14px; }
+      .layout { grid-template-columns: 1fr; } .log { height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>CSI Action Lab</h1>
+        <p class="subtitle">Collect CSI frames, build a dataset, train the CNN model, and run real-time action recognition.</p>
+      </div>
+      <div class="badge"><span id="statusDot" class="status-dot"></span><span id="statusText">Backend ready</span></div>
+    </header>
+
+    <div class="layout">
+      <section class="panel">
+        <h2>Device and recording settings</h2>
+        <div class="stack">
+          <label>Serial port
+            <select id="port"><option value="COM8">COM8</option></select>
+          </label>
+          <button id="refreshPorts" type="button">Refresh ports</button>
+          <div class="grid-2">
+            <label>Baudrate
+              <input id="baudrate" type="number" min="1" value="2000000">
+            </label>
+            <label>Action label
+              <input id="action" value="standing" pattern="[A-Za-z0-9_-]+">
+            </label>
+          </div>
+          <div class="grid-2">
+            <label>Recording time (seconds)
+              <input id="duration" type="number" min="1" step="1" value="30">
+            </label>
+            <label>Start countdown (seconds)
+              <input id="countdown" type="number" min="0" step="1" value="3">
+            </label>
+          </div>
+          <div id="countdownDisplay" class="countdown" aria-live="polite"></div>
+          <button id="record" class="primary" type="button">Start recording</button>
+          <div class="actions">
+            <button id="dataset" type="button">Build dataset</button>
+            <button id="train" type="button">Train CNN</button>
+            <button id="predict" class="success" type="button">Realtime predict</button>
+            <button id="stop" class="danger" type="button" disabled>Stop process</button>
+          </div>
+        </div>
+        <div class="steps">
+          <div class="step"><span>1</span>Record CSI data into Data/&lt;label&gt;</div>
+          <div class="step"><span>2</span>Create csi_dataset.npz</div>
+          <div class="step"><span>3</span>Train and save csi_cnn_model.pth</div>
+          <div class="step"><span>4</span>Run live prediction</div>
+        </div>
+        <p class="hint">The local backend automatically uses the project virtual environment when it is available.</p>
+      </section>
+
+      <section class="panel">
+        <div class="status-row">
+          <h2>Pipeline output</h2>
+          <button id="clearLog" type="button">Clear log</button>
+        </div>
+        <pre id="log" class="log" aria-live="polite">Ready. Select your device settings and choose a pipeline action.</pre>
+        <p class="hint">Python stdout and stderr are streamed here. Sound notifications require a user interaction with the page.</p>
+      </section>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = $("log");
+    let activeRun = null;
+    let pollTimer = null;
+
+    function append(text) {
+      log.textContent += (log.textContent ? "\n" : "") + text;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function beep(frequency, duration = .16) {
+      const Context = window.AudioContext || window.webkitAudioContext;
+      if (!Context) return;
+      const context = new Context();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.frequency.value = frequency;
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      gain.gain.setValueAtTime(.12, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(.001, context.currentTime + duration);
+      oscillator.start();
+      oscillator.stop(context.currentTime + duration);
+    }
+
+    function setBusy(busy) {
+      ["record", "dataset", "train", "predict", "refreshPorts"].forEach((id) => $(id).disabled = busy);
+      $("stop").disabled = !busy;
+      $("statusDot").classList.toggle("running", busy);
+      $("statusText").textContent = busy ? "Process running" : "Backend ready";
+    }
+
+    async function refreshPorts() {
+      try {
+        const response = await fetch("/api/ports");
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Unable to list serial ports.");
+        const previous = $("port").value;
+        $("port").replaceChildren(...data.ports.map((item) => {
+          const option = document.createElement("option");
+          option.value = item.device;
+          option.textContent = `${item.device} - ${item.description}`;
+          return option;
+        }));
+        if ([...$("port").options].some((option) => option.value === previous)) $("port").value = previous;
+        append(`Detected ${data.ports.length} serial port(s).`);
+      } catch (error) {
+        $("statusText").textContent = "Port scan failed";
+        $("statusDot").classList.add("error");
+        append(`Port scan error: ${error.message}`);
+      }
+    }
+
+    async function pollRun(runId) {
+      try {
+        const response = await fetch(`/api/runs/${runId}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Unable to read process output.");
+        log.textContent = data.lines.join("\n");
+        log.scrollTop = log.scrollHeight;
+        if (!data.done) {
+          pollTimer = setTimeout(() => pollRun(runId), 400);
+          return;
+        }
+        activeRun = null;
+        setBusy(false);
+        beep(data.returncode === 0 ? 1046 : 220);
+        append(data.returncode === 0 ? "Process completed successfully." : `Process exited with code ${data.returncode}.`);
+      } catch (error) {
+        activeRun = null;
+        setBusy(false);
+        $("statusText").textContent = "Process error";
+        $("statusDot").classList.add("error");
+        append(`Process output error: ${error.message}`);
+      }
+    }
+
+    async function start(kind) {
+      if (activeRun) return;
+      const baudrate = Number($("baudrate").value);
+      const duration = Number($("duration").value);
+      const action = $("action").value.trim();
+      if (!$("port").value || !Number.isInteger(baudrate) || baudrate <= 0 || !action || !Number.isFinite(duration) || duration <= 0) {
+        append("Invalid settings. Check port, baudrate, action label, and recording time.");
+        return;
+      }
+      log.textContent = `Starting ${kind}...`;
+      setBusy(true);
+      try {
+        const response = await fetch("/api/run", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({kind, port: $("port").value, baudrate, action, duration})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Unable to start process.");
+        activeRun = data.runId;
+        pollRun(activeRun);
+      } catch (error) {
+        setBusy(false);
+        append(`Start error: ${error.message}`);
+      }
+    }
+
+    async function startRecording() {
+      if (activeRun) return;
+      const seconds = Math.max(0, Math.floor(Number($("countdown").value) || 0));
+      for (let remaining = seconds; remaining > 0; remaining -= 1) {
+        $("countdownDisplay").textContent = `Recording starts in ${remaining}`;
+        beep(440, .08);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      $("countdownDisplay").textContent = "Recording started";
+      beep(880);
+      await start("record");
+      setTimeout(() => $("countdownDisplay").textContent = "", 1200);
+    }
+
+    $("refreshPorts").addEventListener("click", refreshPorts);
+    $("record").addEventListener("click", startRecording);
+    $("dataset").addEventListener("click", () => start("dataset"));
+    $("train").addEventListener("click", () => start("train"));
+    $("predict").addEventListener("click", () => start("predict"));
+    $("clearLog").addEventListener("click", () => log.textContent = "");
+    $("stop").addEventListener("click", async () => {
+      if (!activeRun) return;
+      await fetch(`/api/runs/${activeRun}/stop`, {method: "POST"});
+      append("Stop request sent.");
+    });
+    refreshPorts();
+  </script>
+</body>
+</html>

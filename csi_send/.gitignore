@@ -1,0 +1,9 @@
+# Thư mục sinh ra khi build
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+*.elf
+*.bin
+*.map
