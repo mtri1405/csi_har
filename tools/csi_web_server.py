@@ -84,6 +84,17 @@ def start_process(kind, args):
     return run_id
 
 
+def extract_evaluation(lines):
+    prefix = "EVALUATION_JSON: "
+    for line in reversed(lines):
+        if line.startswith(prefix):
+            try:
+                return json.loads(line[len(prefix):])
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -113,6 +124,7 @@ class Handler(BaseHTTPRequestHandler):
                 "done": state["done"],
                 "returncode": state.get("returncode"),
                 "lines": state["lines"][-500:],
+                "evaluation": extract_evaluation(state["lines"]),
             })
             return
         if parsed.path in ("/", "/csi_web.html"):

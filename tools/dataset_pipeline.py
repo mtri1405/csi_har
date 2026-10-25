@@ -1,169 +1,198 @@
+# dataset_pipeline.py
 import os
 import re
 import glob
+import json
 import numpy as np
-from scipy.signal import butter, filtfilt
-from csi_preprocessing import remove_unusable_subcarriers
+from csi_preprocessing import (
+    FILTER_CUTOFF_HZ, FILTER_ORDER, PCA_COMPONENTS, RAW_SUBCARRIERS,
+    SAMPLE_RATE_HZ, TARGET_SUBCARRIERS, WINDOW_SIZE, preprocess_csi,
+    remove_unusable_subcarriers, preprocess_window, REMOVED_SUBCARRIER_INDICES,
+)
+
+# Tên thư mục -> nhãn. Đây là nguồn duy nhất định nghĩa nhãn,
+# train.py sẽ đọc lại từ file .npz thay vì tự hard-code.
+ACTIONS = {
+    "empty": 0,
+    "walking": 1,
+    "standing": 2,
+}
+LABEL_NAMES = {
+    0: "Phòng trống (Empty)",
+    1: "Đang đi lại (Walking)",
+    2: "Đang đứng yên (Standing)",
+}
+RAW_LEN = RAW_SUBCARRIERS * 2
+
 
 # --- 1. ĐỌC DỮ LIỆU TỪ FILE ---
 def parse_csi_file(filepath):
     amplitudes = []
     skipped_frames = 0
-    
+
     with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
-            # 1. Kiểm tra cấu trúc cơ bản của dòng
             if "CSI_DATA" not in line or "[" not in line or "]" not in line:
                 continue
-            
-            match = re.search(r'\[(.*?)\]', line)
+
+            match = re.search(r"\[(.*?)\]", line)
             if not match:
                 continue
-            
-            # 2. Ép kiểu an toàn (Safe Parsing)
+
             try:
-                # Tách chuỗi theo dấu phẩy và chuyển đổi sang số nguyên
-                raw_vals = [int(x.strip()) for x in match.group(1).split(',')]
+                raw_vals = [int(x.strip()) for x in match.group(1).split(",")]
             except ValueError:
-                # Bắt lỗi khi chuỗi bị dính số (như '-6-19') -> Bỏ qua frame hỏng này
+                # Chuỗi bị dính số (vd '-6-19') -> bỏ frame hỏng
                 skipped_frames += 1
                 continue
-            
-            # 3. Kiểm tra độ dài bắt buộc (384 bytes cho HT40)
-            if len(raw_vals) != 384:
+
+            if len(raw_vals) != RAW_LEN:
                 skipped_frames += 1
                 continue
-            
-            # 4. Tách phần thực và phần ảo để tính biên độ
+
             raw_arr = np.array(raw_vals, dtype=np.float32)
             imag = raw_arr[0::2]
             real = raw_arr[1::2]
-            amp = np.sqrt(real**2 + imag**2)
-            
-            # 5. Kiểm tra giá trị bất thường (NaN / Inf)
+            amp = np.sqrt(real ** 2 + imag ** 2)
+
             if np.isnan(amp).any() or np.isinf(amp).any():
                 skipped_frames += 1
                 continue
 
             amplitudes.append(amp)
-            
+
     if skipped_frames > 0:
-        print(f"    [Thông báo] Bỏ qua {skipped_frames} frame bị lỗi dữ liệu trong '{os.path.basename(filepath)}'.")
-        
-    return np.array(amplitudes)  # Kích thước ban đầu: (Số_frames_hợp_lệ, 192)
+        print(f"    [Thông báo] Bỏ qua {skipped_frames} frame lỗi trong '{os.path.basename(filepath)}'.")
 
-# --- 2. LỌC NHIỄU TÍN HIỆU ---
-def filter_csi(data, cutoff_hz=3.0, fs=10.0, order=4):
+    if not amplitudes:
+        return np.empty((0, RAW_LEN // 2), dtype=np.float32)
+    return np.array(amplitudes, dtype=np.float32)  # (frames, 64 HT20 subcarriers)
+
+
+# --- 2. QUÉT DỮ LIỆU VÀ CẮT CỬA SỔ ---
+def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
     """
-    Lọc thông thấp dọc theo trục thời gian (axis=0) cho từng subcarrier.
+    Cấu trúc thư mục:
+      Data/empty/*.csv     -> nhãn 0
+      Data/walking/*.csv   -> nhãn 1
+      Data/standing/*.csv  -> nhãn 2
     """
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff_hz / nyq
-    b, a = butter(order, normal_cutoff, btype='low', analog=False)
-    
-    # Lọc thông thấp Butterworth
-    filtered = filtfilt(b, a, data, axis=0)
-    return filtered
+    X, y, sample_groups = [], [], []
+    expected_keep_indices = None
+    files_per_label = {}
+    rejected_files = {}
 
-# --- 3. QUÉT DỮ LIỆU VÀ CẮT CỬA SỔ (DATASET BUILDER) ---
-
-def build_dataset(base_dir="Data", window_size=30, stride=5):
-    """
-    Quét dữ liệu từ các thư mục con trong 'Data/':
-      - Data/empty/*.csv      -> Nhãn 0
-      - Data/sit_stand/*.csv  -> Nhãn 1
-      - Data/walking/*.csv    -> Nhãn 2
-    """
-    actions = {
-        "empty": 0,
-        "walking": 1,
-        "standing": 2,
-        "left_hand": 3
-    }
-
-    X, y = [], []
-    valid_subcarrier_count = None
-
-    for action_name, label in actions.items():
-        # Trỏ thẳng vào thư mục con: Data/<action_name>/*.csv
+    for action_name, label in ACTIONS.items():
         folder_path = os.path.join(base_dir, action_name)
-        
-        if not os.path.exists(folder_path):
-            print(f"[!] CẢNH BÁO: Không tìm thấy thư mục '{folder_path}'. Bỏ qua nhãn {action_name}.")
-            continue
 
-        # Tìm toàn bộ file .csv trong thư mục hành động
-        files = glob.glob(os.path.join(folder_path, "*.csv"))
-        print(f"[*] Hành động '{action_name}' (Nhãn {label}): Tìm thấy {len(files)} file CSV.")
+        files = sorted(glob.glob(os.path.join(folder_path, "*.csv")))
+        print(f"[*] '{action_name}' (nhãn {label}): tìm thấy {len(files)} file CSV.")
+        used_files = 0
+        rejected_files[action_name] = []
 
         for file in files:
             raw_amp = parse_csi_file(file)
-            
-            # Kiểm tra độ dài file có đủ cắt ít nhất 1 cửa sổ không
-            if len(raw_amp) < window_size:
-                print(f"    [!] Bỏ qua file '{os.path.basename(file)}' (chỉ có {len(raw_amp)} frame, cần tối thiểu {window_size})")
+            if raw_amp.size == 0:
+                print(f"    [!] '{os.path.basename(file)}' không có frame CSI hợp lệ; bỏ qua.")
                 continue
 
-            cleaned_amp, removed_indices, _ = remove_unusable_subcarriers(raw_amp)
-            if valid_subcarrier_count is None:
-                valid_subcarrier_count = cleaned_amp.shape[1]
-            elif cleaned_amp.shape[1] != valid_subcarrier_count:
+
+            if len(raw_amp) < window_size:
+                print(
+                    f"    [!] '{os.path.basename(file)}' có {len(raw_amp)} frame hợp lệ; "
+                    f"đệm thêm {window_size - len(raw_amp)} frame cuối để đủ {window_size}"
+                )
+
+            raw_amp = preprocess_csi(raw_amp)
+            cleaned_amp, removed_indices, keep_indices = remove_unusable_subcarriers(raw_amp)
+            keep_indices = [int(i) for i in np.asarray(keep_indices).tolist()]
+            if expected_keep_indices is None:
+                expected_keep_indices = keep_indices
+            elif keep_indices != expected_keep_indices:
                 raise ValueError(
-                    f"File '{file}' giữ lại {cleaned_amp.shape[1]} subcarrier, "
-                    f"nhưng dataset trước đó dùng {valid_subcarrier_count}. "
-                    "Các file cần có cùng layout subcarrier."
+                    f"File '{file}' có layout subcarrier khác các file trước. "
+                    "Các file cần có cùng mask subcarrier."
                 )
             print(
-                f"    [CSI] Giữ {cleaned_amp.shape[1]}/192 subcarrier, "
-                f"loại bỏ index: {removed_indices}"
+                f"    [CSI] '{os.path.basename(file)}': "
+                f"giữ {cleaned_amp.shape[1]}/{TARGET_SUBCARRIERS} subcarrier"
             )
 
-            # Lọc nhiễu thông thấp Butterworth
-            filtered = filter_csi(cleaned_amp)
-
-            # Cắt cửa sổ trượt (Sliding Window)
-            num_frames = filtered.shape[0]
+            num_frames = cleaned_amp.shape[0]
+            if num_frames < window_size:
+                cleaned_amp = np.pad(
+                    cleaned_amp,
+                    ((0, window_size - num_frames), (0, 0)),
+                    mode="edge",
+                )
+                num_frames = window_size
+            n_windows = 0
             for start in range(0, num_frames - window_size + 1, stride):
-                end = start + window_size
-                win = filtered[start:end, :]
-
-                # Chuẩn hóa Z-Score từng cửa sổ để loại bỏ nhiễu phản xạ tĩnh
-                win_norm = (win - np.mean(win)) / (np.std(win) + 1e-8)
-
-                X.append(win_norm)
+                win = cleaned_amp[start:start + window_size, :]
+                # Giống hệt realtime: lọc, PCA và Min-Max từng cửa sổ
+                X.append(preprocess_window(win))
                 y.append(label)
+                sample_groups.append(os.path.abspath(file))
+                n_windows += 1
 
-    if len(X) == 0:
-        raise ValueError("Không tìm thấy dữ liệu hợp lệ! Vui lòng kiểm tra lại cấu trúc thư mục 'Data/'.")
+            if n_windows > 0:
+                used_files += 1
 
-    # Chuyển thành định dạng đầu vào cho CNN: (Số_mẫu, Height=30, Width=valid_subcarriers, Channels=1)
-    X = np.array(X, dtype=np.float32)[..., np.newaxis]
+        files_per_label[label] = used_files
+
+
+
+
+
+    if not X or expected_keep_indices is None:
+        raise ValueError(f"Không tìm thấy file CSI hợp lệ trong '{base_dir}'.")
+
+    X = np.array(X, dtype=np.float32)[..., np.newaxis]  # (N, WINDOW_SIZE, 10, 1)
     y = np.array(y, dtype=np.int64)
+    return X, y, np.array(sample_groups), np.array(expected_keep_indices, dtype=np.int64)
 
-    return X, y
 
-# --- 4. CHẠY THỬ NGHIỆM VÀ KIỂM TRA DỮ LIỆU ---
+# --- 3. CHẠY VÀ LƯU DATASET ---
 if __name__ == "__main__":
-    DATA_PATH = "Data"  # Đường dẫn đến thư mục chứa dữ liệu của bạn
-    
-    print("--- ĐANG TIẾN HÀNH XỬ LÝ VÀ ĐÓNG GÓI DATASET ---")
-    X, y = build_dataset(base_dir=DATA_PATH, window_size=30, stride=5)
-    
-    print("\n--- KẾT QUẢ XỬ LÝ ---")
-    print(f"Tổng số mẫu tạo được (Samples): {X.shape[0]}")
-    print(
-        f"Kích thước mỗi mẫu (X.shape)   : {X.shape}  -> "
-        f"(N, 30 frames, {X.shape[2]} valid subcarriers, 1 channel)"
-    )
-    print(f"Kích thước nhãn    (y.shape)   : {y.shape}")
-    
-    # Đếm số lượng mẫu của từng nhãn để kiểm tra cân bằng dữ liệu
-    unique, counts = np.unique(y, return_counts=True)
-    label_map = {0: "empty", 1: "walking", 2: "standing", 3: "left_hand"}
-    for u, c in zip(unique, counts):
-        print(f" - Nhãn {u} ({label_map.get(u, 'unknown')}): {c} mẫu")
+    DATA_PATH = "Data"
 
-    # Lưu dataset ra file .npz để tái sử dụng nhanh khi train mà không cần parse lại
+    print("--- ĐANG XỬ LÝ VÀ ĐÓNG GÓI DATASET ---")
+    X, y, groups, keep_indices = build_dataset(
+        base_dir=DATA_PATH, window_size=WINDOW_SIZE, stride=5
+    )
+
+    print("\n--- KẾT QUẢ XỬ LÝ ---")
+    print(f"Tổng số mẫu: {X.shape[0]}")
+    print(f"X.shape: {X.shape} -> (N, {WINDOW_SIZE} frames, {X.shape[2]} subcarrier, 1 kênh)")
+    print(f"y.shape: {y.shape}")
+    print(f"Số phiên thu độc lập (file): {len(np.unique(groups))}")
+
+    for label in sorted(LABEL_NAMES):
+        n_samples = int((y == label).sum())
+        n_files = len(np.unique(groups[y == label]))
+        print(f" - Nhãn {label} ({LABEL_NAMES[label]}): {n_samples} mẫu / {n_files} file")
+
     output_file = "csi_dataset.npz"
-    np.savez_compressed(output_file, X=X, y=y)
-    print(f"\n[OK] Đã lưu dataset hoàn chỉnh vào file: {output_file}")
+    metadata = {
+        "window_size": WINDOW_SIZE,
+        "sample_rate_hz": SAMPLE_RATE_HZ,
+        "filter_cutoff_hz": FILTER_CUTOFF_HZ,
+        "filter_order": FILTER_ORDER,
+        "filter_type": "butterworth_lowpass",
+        "raw_subcarriers": RAW_SUBCARRIERS,
+        "target_subcarriers": TARGET_SUBCARRIERS,
+        "removed_subcarrier_indices": list(REMOVED_SUBCARRIER_INDICES),
+        "pca_components": PCA_COMPONENTS,
+        "normalization": "min_max_0_1",
+        "subcarrier_indices": keep_indices.tolist(),
+    }
+    np.savez_compressed(
+        output_file,
+        X=X,
+        y=y,
+        groups=groups,
+        subcarrier_indices=keep_indices,
+        label_names_json=json.dumps({str(k): v for k, v in LABEL_NAMES.items()}, ensure_ascii=False),
+        metadata_json=json.dumps(metadata),
+    )
+    print(f"\n[OK] Đã lưu dataset vào: {output_file}")

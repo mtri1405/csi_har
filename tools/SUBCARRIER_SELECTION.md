@@ -2,11 +2,11 @@
 
 ## Purpose
 
-The recorder stores 384 integer values per CSI frame. They are interpreted as
-192 interleaved complex samples:
+The recorder stores 128 integer values per CSI frame in HT20 mode. They are
+interpreted as 64 interleaved complex samples:
 
 ```text
-imaginary_0, real_0, imaginary_1, real_1, ..., imaginary_191, real_191
+imaginary_0, real_0, imaginary_1, real_1, ..., imaginary_63, real_63
 ```
 
 The dataset pipeline converts each complex sample to amplitude and then removes
@@ -19,14 +19,14 @@ The policy is implemented in
 
 | Group | Raw indices | Decision | Reason |
 | --- | ---: | --- | --- |
-| Left guard band | `0..5` | Remove | Edge/guard samples are outside the useful occupied band and are commonly zero or very weak. |
-| Right guard band | `186..191` | Remove | Same reason as the left edge. |
-| DC carrier | `96` | Remove | The center/DC carrier does not carry an OFDM data symbol and is normally null. |
+| Low-index noise band | `0..5` | Remove | Edge/guard samples are outside the useful occupied band and are commonly zero or very weak. |
+| Noise carriers | `11`, `25`, `32`, `39`, `53` | Remove | Project-level noisy carrier mask. |
+| High-index noise band | `58..63` | Remove | Edge/guard samples are outside the useful occupied band and are commonly zero or very weak. |
 | All-zero columns | Any remaining index | Remove | If the complex amplitude is zero for every valid frame in a CSV, that column is not carrying usable CSI in that recording. |
 | Remaining columns | All other indices | Keep | These are retained as the model input. |
 
-With no additional all-zero columns, this leaves **179 subcarriers**
-(`192 - 6 - 6 - 1`). If a recording contains additional columns that are zero
+With no additional all-zero columns, this leaves **47 subcarriers**
+(`64 - 6 - 5 - 6`). If a recording contains additional columns that are zero
 for its entire duration, the pipeline removes them too.
 
 ## Why remove columns, not individual values?
@@ -43,23 +43,22 @@ explicit error rather than silently creating incompatible training data.
 
 ## Important mapping assumption
 
-The current 192-sample layout is treated as an ordered HT40 sequence from
-subcarrier `-96` through `+95`, so raw index `96` is used as the DC position.
-The exact order can vary with ESP32 chip, PHY mode, driver, and firmware.
-This assumption should be verified when changing hardware or switching between
-HT20 and HT40.
+The current layout is the direct 64-value HT20 sequence produced by the
+receiver. The exact order can vary with ESP32 chip, driver, and firmware, so
+the project-level mask should be revalidated if the hardware or CSI settings
+change.
 
 Verification steps:
 
-1. Confirm that every accepted frame has 384 CSI integers (192 complex samples).
+1. Confirm that every accepted frame has 128 CSI integers (64 complex samples).
 2. Inspect the amplitude plot before and after filtering.
 3. Check that edge columns are consistently empty/weak and that the center
    column is the DC/null carrier.
 4. Compare the model accuracy with and without the mask on a held-out test set.
 
-The realtime predictor removes the fixed edge and DC positions as well, so its
-input width matches the dataset for the normal case. It does not dynamically
-remove all-zero columns from one frame because a single frame is not enough
+The realtime predictor removes the fixed 64-channel mask as well, so its input
+width matches the dataset for the normal case. It does not dynamically remove
+all-zero columns from one frame because a single frame is not enough
 evidence that a subcarrier is permanently unusable.
 
 ## References

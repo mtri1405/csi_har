@@ -16,6 +16,8 @@
       --green: #3cdb9a;
       --orange: #ffb454;
       --red: #ff6f89;
+      --cyan: #61e7ff;
+      --shadow: 0 24px 70px #0005;
     }
     * { box-sizing: border-box; }
     body {
@@ -23,17 +25,23 @@
       min-height: 100vh;
       color: var(--text);
       font: 15px/1.5 "Segoe UI", Arial, sans-serif;
-      background: radial-gradient(circle at 10% 0%, #173c63 0, transparent 34%), var(--bg);
+      background:
+        radial-gradient(circle at 8% 0%, #1c527c 0, transparent 30%),
+        radial-gradient(circle at 95% 15%, #14355d 0, transparent 26%),
+        linear-gradient(145deg, #07101d, var(--bg) 50%, #0b172b);
     }
-    .shell { max-width: 1280px; margin: 0 auto; padding: 28px; }
-    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 24px; }
+    .shell { max-width: 1380px; margin: 0 auto; padding: 32px; }
+    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 26px; }
+    .eyebrow { color: var(--cyan); text-transform: uppercase; letter-spacing: .16em; font-size: 11px; font-weight: 700; margin-bottom: 8px; }
     h1, h2, p { margin: 0; }
-    h1 { font-size: clamp(28px, 5vw, 44px); letter-spacing: -.04em; }
+    h1 { font-size: clamp(32px, 5vw, 54px); line-height: 1; letter-spacing: -.055em; }
     h2 { font-size: 17px; margin-bottom: 16px; }
     .subtitle { color: var(--muted); margin-top: 6px; max-width: 680px; }
-    .badge { border: 1px solid var(--border); background: #102944; color: var(--green); border-radius: 999px; padding: 8px 13px; white-space: nowrap; }
-    .layout { display: grid; grid-template-columns: minmax(320px, 390px) 1fr; gap: 20px; }
-    .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--border); border-radius: 18px; padding: 20px; box-shadow: 0 18px 45px #0003; }
+    .badge { display: flex; align-items: center; border: 1px solid #315379; background: #102944cc; color: var(--green); border-radius: 999px; padding: 9px 14px; white-space: nowrap; box-shadow: 0 8px 25px #0003; }
+    .layout { display: grid; grid-template-columns: minmax(330px, 390px) minmax(0, 1fr); gap: 22px; align-items: start; }
+    .panel { background: linear-gradient(145deg, #122139f2, #0d192bf2); border: 1px solid #294565; border-radius: 20px; padding: 22px; box-shadow: var(--shadow); }
+    .panel h2 { display: flex; align-items: center; gap: 8px; }
+    .panel h2::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
     .stack { display: grid; gap: 14px; }
     label { color: var(--muted); font-size: 13px; display: grid; gap: 6px; }
     input, select {
@@ -43,8 +51,11 @@
     input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px #42a5ff22; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .action-group { border: 1px solid #284362; border-radius: 14px; padding: 12px; background: #0d1a2c99; }
+    .action-group + .action-group { margin-top: 10px; }
+    .action-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; margin-bottom: 9px; }
     button {
-      border: 0; border-radius: 10px; padding: 11px 12px; color: var(--text); background: #244263;
+      border: 1px solid transparent; border-radius: 11px; padding: 11px 12px; color: var(--text); background: #244263;
       font: inherit; font-weight: 600; cursor: pointer; transition: .15s ease;
     }
     button:hover:not(:disabled) { filter: brightness(1.15); transform: translateY(-1px); }
@@ -54,11 +65,32 @@
     button.warning { background: linear-gradient(135deg, #c17e2d, #8f5420); }
     button.danger { background: linear-gradient(135deg, #bd526a, #803548); }
     .countdown { min-height: 42px; display: grid; place-items: center; color: var(--orange); font-size: 27px; font-weight: 700; }
-    .status-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border-radius: 10px; background: var(--panel-light); }
+    .status-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 13px 15px; border: 1px solid #284362; border-radius: 13px; background: linear-gradient(90deg, #162a43, #112239); }
     .status-dot { width: 10px; height: 10px; display: inline-block; border-radius: 50%; background: var(--muted); margin-right: 8px; }
     .status-dot.running { background: var(--green); box-shadow: 0 0 14px var(--green); }
     .status-dot.error { background: var(--red); }
-    .log { height: 470px; overflow: auto; margin: 0; padding: 16px; color: #cfe3ff; background: #07101d; border: 1px solid var(--border); border-radius: 12px; white-space: pre-wrap; word-break: break-word; font: 12px/1.65 Consolas, monospace; }
+    .log { height: 330px; overflow: auto; margin: 0; padding: 16px; color: #cfe3ff; background: #07101d; border: 1px solid var(--border); border-radius: 13px; white-space: pre-wrap; word-break: break-word; font: 12px/1.65 Consolas, monospace; box-shadow: inset 0 0 25px #0005; }
+    .prediction-box { display: none; margin-bottom: 14px; padding: 16px 18px; border: 1px solid #2b7090; border-radius: 14px; background: linear-gradient(135deg, #12334a, #10243a); }
+    .prediction-box.visible { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+    .prediction-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+    .prediction-value { color: var(--cyan); font-size: 22px; font-weight: 700; }
+    .prediction-confidence { color: var(--green); font-weight: 600; white-space: nowrap; }
+    .evaluation { display: none; margin-top: 22px; }
+    .evaluation.visible { display: block; }
+    .evaluation-grid { display: grid; grid-template-columns: minmax(240px, .8fr) 1.2fr; gap: 18px; align-items: start; }
+    .metric-table { width: 100%; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; font-size: 13px; background: #0b1728; }
+    .metric-table th, .metric-table td { border-bottom: 1px solid #203854; padding: 9px; text-align: right; }
+    .metric-table tr:last-child td { border-bottom: 0; }
+    .metric-table th { color: var(--muted); font-weight: 600; background: #14263d; }
+    .metric-table th:first-child, .metric-table td:first-child { text-align: left; }
+    .metric-table caption { text-align: left; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+    .heatmap { display: grid; gap: 4px; margin-top: 8px; overflow-x: auto; }
+    .heat-cell { min-width: 42px; min-height: 38px; display: grid; place-items: center; border-radius: 7px; color: #fff; font-size: 12px; font-weight: 700; }
+    .heat-label { color: var(--muted); font-size: 11px; display: grid; place-items: center; min-width: 42px; }
+    .evaluation-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+    .evaluation-title h2 { margin-bottom: 0; }
+    .evaluation-title span { color: var(--muted); font-size: 12px; }
+    @media (max-width: 820px) { .evaluation-grid { grid-template-columns: 1fr; } }
     .hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
     .steps { display: grid; gap: 10px; margin-top: 20px; }
     .step { display: flex; gap: 10px; align-items: center; color: var(--muted); }
@@ -73,17 +105,18 @@
   <main class="shell">
     <header>
       <div>
+        <div class="eyebrow">Wireless sensing / model workspace</div>
         <h1>CSI Action Lab</h1>
-        <p class="subtitle">Collect CSI frames, build a dataset, train the CNN model, and run real-time action recognition.</p>
+        <p class="subtitle">Build a dataset and train offline, then collect CSI frames or run real-time recognition when an ESP device is connected.</p>
       </div>
       <div class="badge"><span id="statusDot" class="status-dot"></span><span id="statusText">Backend ready</span></div>
     </header>
 
     <div class="layout">
-      <section class="panel">
+      <section class="panel device-panel">
         <h2>Device and recording settings</h2>
         <div class="stack">
-          <label>Serial port
+          <label>Serial port (only for recording and realtime prediction)
             <select id="port"><option value="COM8">COM8</option></select>
           </label>
           <button id="refreshPorts" type="button">Refresh ports</button>
@@ -104,13 +137,21 @@
             </label>
           </div>
           <div id="countdownDisplay" class="countdown" aria-live="polite"></div>
-          <button id="record" class="primary" type="button">Start recording</button>
-          <div class="actions">
-            <button id="dataset" type="button">Build dataset</button>
-            <button id="train" type="button">Train CNN</button>
-            <button id="predict" class="success" type="button">Realtime predict</button>
-            <button id="stop" class="danger" type="button" disabled>Stop process</button>
+          <div class="action-group">
+            <div class="action-label">Device actions</div>
+            <div class="actions">
+              <button id="record" class="primary" type="button">● Start recording</button>
+              <button id="predict" class="success" type="button">↗ Realtime predict</button>
+            </div>
           </div>
+          <div class="action-group">
+            <div class="action-label">Offline model pipeline</div>
+            <div class="actions">
+              <button id="dataset" type="button">▦ Build dataset</button>
+              <button id="train" type="button">⚙ Train CNN</button>
+            </div>
+          </div>
+          <button id="stop" class="danger" type="button" disabled>■ Stop process</button>
         </div>
         <div class="steps">
           <div class="step"><span>1</span>Record CSI data into Data/&lt;label&gt;</div>
@@ -121,12 +162,29 @@
         <p class="hint">The local backend automatically uses the project virtual environment when it is available.</p>
       </section>
 
-      <section class="panel">
+      <section class="panel output-panel">
         <div class="status-row">
           <h2>Pipeline output</h2>
           <button id="clearLog" type="button">Clear log</button>
         </div>
+        <div id="predictionBox" class="prediction-box" aria-live="polite">
+          <div>
+            <div class="prediction-label">Realtime prediction</div>
+            <div id="predictionValue" class="prediction-value">-</div>
+          </div>
+          <div id="predictionConfidence" class="prediction-confidence">-</div>
+        </div>
         <pre id="log" class="log" aria-live="polite">Ready. Select your device settings and choose a pipeline action.</pre>
+        <div id="evaluation" class="evaluation">
+          <div class="evaluation-title">
+            <h2>Model evaluation</h2>
+            <span>Best checkpoint · test set</span>
+          </div>
+          <div class="evaluation-grid">
+            <div id="confusionMatrix"></div>
+            <div id="classificationReport"></div>
+          </div>
+        </div>
         <p class="hint">Python stdout and stderr are streamed here. Sound notifications require a user interaction with the page.</p>
       </section>
     </div>
@@ -140,6 +198,16 @@
     function append(text) {
       log.textContent += (log.textContent ? "\n" : "") + text;
       log.scrollTop = log.scrollHeight;
+      updatePrediction(text);
+    }
+
+    function updatePrediction(text) {
+      const prediction = text.match(/\[DỰ ĐOÁN\]:\s*(.*?)\s*\|\s*Độ tin cậy:\s*([\d.]+)%/);
+      if (prediction) {
+        $("predictionValue").textContent = prediction[1].trim();
+        $("predictionConfidence").textContent = `${prediction[2]}% confidence`;
+        $("predictionBox").classList.add("visible");
+      }
     }
 
     function beep(frequency, duration = .16) {
@@ -162,6 +230,98 @@
       $("stop").disabled = !busy;
       $("statusDot").classList.toggle("running", busy);
       $("statusText").textContent = busy ? "Process running" : "Backend ready";
+    }
+
+    function makeTable(caption, headers, rows) {
+      const table = document.createElement("table");
+      table.className = "metric-table";
+      const title = document.createElement("caption");
+      title.textContent = caption;
+      table.append(title);
+      const head = document.createElement("tr");
+      headers.forEach((value) => {
+        const cell = document.createElement("th");
+        cell.textContent = value;
+        head.append(cell);
+      });
+      table.append(head);
+      rows.forEach((row) => {
+        const tr = document.createElement("tr");
+        row.forEach((value) => {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          tr.append(cell);
+        });
+        table.append(tr);
+      });
+      return table;
+    }
+
+    function makeConfusionMatrix(labels, matrix) {
+      const wrapper = document.createElement("div");
+      const caption = document.createElement("div");
+      caption.className = "metric-table caption";
+      caption.textContent = "Confusion matrix · actual vs predicted";
+      wrapper.append(caption);
+
+      const grid = document.createElement("div");
+      grid.className = "heatmap";
+      grid.style.gridTemplateColumns = `repeat(${labels.length + 1}, minmax(42px, 1fr))`;
+      const maxValue = Math.max(1, ...matrix.flat());
+      const addLabel = (text) => {
+        const cell = document.createElement("div");
+        cell.className = "heat-label";
+        cell.textContent = text;
+        grid.append(cell);
+      };
+      addLabel("Actual \\ Pred.");
+      labels.forEach(addLabel);
+      matrix.forEach((row, rowIndex) => {
+        addLabel(labels[rowIndex] || `class_${rowIndex}`);
+        row.forEach((value) => {
+          const cell = document.createElement("div");
+          cell.className = "heat-cell";
+          cell.textContent = value;
+          const intensity = value / maxValue;
+          cell.style.background = value
+            ? `linear-gradient(135deg, rgba(66,165,255,${.35 + intensity * .65}), rgba(97,231,255,${.2 + intensity * .5}))`
+            : "#15283d";
+          cell.title = `${value} sample(s)`;
+          grid.append(cell);
+        });
+      });
+      wrapper.append(grid);
+      return wrapper;
+    }
+
+    function renderEvaluation(evaluation) {
+      if (!evaluation) return;
+      const labels = evaluation.labels || [];
+      const matrix = evaluation.confusion_matrix || [];
+      $("confusionMatrix").replaceChildren(makeConfusionMatrix(labels, matrix));
+
+      const report = evaluation.classification_report || {};
+      const reportLabels = labels.filter((label) => report[label]);
+      const reportRows = reportLabels.map((label) => {
+        const values = report[label];
+        return [label, values.precision.toFixed(4), values.recall.toFixed(4),
+          values["f1-score"].toFixed(4), values.support];
+      });
+      if (typeof report.accuracy === "number") {
+        const support = reportLabels.reduce((total, label) => total + report[label].support, 0);
+        reportRows.push(["accuracy", "-", "-", report.accuracy.toFixed(4), support]);
+      }
+      ["macro avg", "weighted avg"].forEach((label) => {
+        if (report[label]) {
+          const values = report[label];
+          reportRows.push([label, values.precision.toFixed(4), values.recall.toFixed(4),
+            values["f1-score"].toFixed(4), values.support]);
+        }
+      });
+      $("classificationReport").replaceChildren(
+        makeTable("Classification report", ["Class", "Precision", "Recall", "F1-score", "Support"], reportRows)
+      );
+      $("evaluation").classList.add("visible");
     }
 
     async function refreshPorts() {
@@ -192,6 +352,8 @@
         if (!response.ok) throw new Error(data.error || "Unable to read process output.");
         log.textContent = data.lines.join("\n");
         log.scrollTop = log.scrollHeight;
+        updatePrediction(data.lines[data.lines.length - 1] || "");
+        renderEvaluation(data.evaluation);
         if (!data.done) {
           pollTimer = setTimeout(() => pollRun(runId), 400);
           return;
@@ -211,20 +373,40 @@
 
     async function start(kind) {
       if (activeRun) return;
+      if (kind === "train") {
+        $("evaluation").classList.remove("visible");
+        $("confusionMatrix").replaceChildren();
+        $("classificationReport").replaceChildren();
+      }
+      if (kind === "predict") {
+        $("predictionBox").classList.remove("visible");
+        $("predictionValue").textContent = "-";
+        $("predictionConfidence").textContent = "-";
+      }
+      const needsSerialPort = kind === "record" || kind === "predict";
       const baudrate = Number($("baudrate").value);
       const duration = Number($("duration").value);
       const action = $("action").value.trim();
-      if (!$("port").value || !Number.isInteger(baudrate) || baudrate <= 0 || !action || !Number.isFinite(duration) || duration <= 0) {
+      if (needsSerialPort && (!$("port").value || !Number.isInteger(baudrate) || baudrate <= 0 || !action || !Number.isFinite(duration) || duration <= 0)) {
         append("Invalid settings. Check port, baudrate, action label, and recording time.");
         return;
       }
       log.textContent = `Starting ${kind}...`;
       setBusy(true);
       try {
+        const payload = {kind};
+        if (needsSerialPort) {
+          Object.assign(payload, {
+            port: $("port").value,
+            baudrate,
+            action,
+            duration
+          });
+        }
         const response = await fetch("/api/run", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({kind, port: $("port").value, baudrate, action, duration})
+          body: JSON.stringify(payload)
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "Unable to start process.");

@@ -1,5 +1,11 @@
 {
     "idf.currentSetup": "D:\\esp\\v6.1\\esp-idf",
     "idf.port": "COM6",
-    "idf.flashType": "UART"
+    "idf.flashType": "UART",
+    "clangd.path": "D:\\Espressif\\tools\\esp-clangd\\esp-21.1.3_20260408\\esp-clangd\\bin\\clangd.exe",
+    "clangd.arguments": [
+      "--background-index",
+      "--query-driver=**",
+      "--compile-commands-dir=d:\\1\\Dai_Hoc\\DACN\\Project\\csi_send\\build"
+    ]
 }

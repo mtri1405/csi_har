@@ -10,20 +10,16 @@
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_now.h"
+#include "csi_proto.h"
 // #include "esp_csi_gain_ctrl.h"
 
 #define CONFIG_LESS_INTERFERENCE_CHANNEL   11
-#if CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C61 || (CONFIG_IDF_TARGET_ESP32C6 && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0))
-#define CONFIG_WIFI_BAND_MODE               WIFI_BAND_MODE_2G_ONLY
-#define CONFIG_WIFI_2G_BANDWIDTHS           WIFI_BW40
-#define CONFIG_WIFI_5G_BANDWIDTHS           WIFI_BW40
-#define CONFIG_WIFI_2G_PROTOCOL             WIFI_PROTOCOL_11N
-#define CONFIG_WIFI_5G_PROTOCOL             WIFI_PROTOCOL_11N
-#else
-#define CONFIG_WIFI_BANDWIDTH           WIFI_BW40
-#endif
 
-#define CONFIG_ESP_NOW_PHYMODE           WIFI_PHY_MODE_HT40
+#define CONFIG_WIFI_BANDWIDTH           WIFI_BW20
+#define CONFIG_EXPECTED_CSI_LENGTH      CSI_IQ_BYTES
+
+
+#define CONFIG_ESP_NOW_PHYMODE           WIFI_PHY_MODE_HT20
 #define CONFIG_ESP_NOW_RATE             WIFI_PHY_RATE_MCS0_LGI
 #define CONFIG_FORCE_GAIN                   0
 
@@ -48,7 +44,7 @@ static void wifi_init()
 
 
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_channel(CONFIG_LESS_INTERFERENCE_CHANNEL, WIFI_SECOND_CHAN_BELOW));
+    ESP_ERROR_CHECK(esp_wifi_set_channel(CONFIG_LESS_INTERFERENCE_CHANNEL, WIFI_SECOND_CHAN_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CONFIG_CSI_SEND_MAC));
 }
 
@@ -78,6 +74,12 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
         return;
     }
 
+    if (info->len != CONFIG_EXPECTED_CSI_LENGTH) {
+        ESP_LOGW(TAG, "Skip CSI frame with length %d; expected %d for HT20",
+                 info->len, CONFIG_EXPECTED_CSI_LENGTH);
+        return;
+    }
+
     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
     static int s_count = 0;
     float compensate_gain = 1.0f;
@@ -104,7 +106,7 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
 
     if (!s_count) {
         ESP_LOGI(TAG, "================ CSI RECV ================");
-        ets_printf("type,id,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,secondary_channel,local_timestamp,ant,sig_len,rx_format,len,first_word,data\n");
+        ets_printf("%s\n", CSI_CSV_HEADER);
     }
 
     ets_printf("CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",

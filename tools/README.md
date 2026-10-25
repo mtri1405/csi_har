@@ -105,6 +105,11 @@ python train.py
 
 Mô hình tốt nhất được lưu thành `csi_cnn_model.pth`.
 
+Checkpoint chứa cả trọng số và metadata preprocessing (mask subcarrier, kích
+thước cửa sổ, tần số mẫu và mapping nhãn). Nếu đã cập nhật code, cần chạy lại
+`dataset_pipeline.py` trước `train.py`; predictor sẽ từ chối checkpoint cũ
+không có metadata để tránh suy luận sai cấu hình.
+
 ### 4. Nhận diện theo thời gian thực
 
 Đảm bảo ESP32 đang kết nối đúng cổng Serial và cập nhật `PORT` trong
@@ -113,6 +118,11 @@ Mô hình tốt nhất được lưu thành `csi_cnn_model.pth`.
 ```powershell
 python realtime_predict.py --port COM8 --baudrate 2000000
 ```
+
+Realtime kiểm tra tốc độ frame, làm mượt xác suất của 5 cửa sổ gần nhất và
+hiển thị `Chưa xác định` khi độ tin cậy đã làm mượt dưới 60%. Chi tiết các
+thay đổi xem tại
+[REALTIME_PREDICTION_CHANGES.md](./REALTIME_PREDICTION_CHANGES.md).
 
 ## Công cụ phân tích CSI
 
@@ -123,6 +133,28 @@ repo. Có thể chạy bằng:
 python csi_data_read_parse.py
 ```
 
+Để so sánh dữ liệu của file đầu tiên trong mỗi nhãn trước và sau bước xử lý,
+chạy công cụ sau từ thư mục `tools`:
+
+```powershell
+python visualize_csi.py
+```
+
+Cửa sổ hiển thị đồ thị đường (mỗi đường là một thành phần PCA) cho dữ liệu chưa
+xử lý và dữ liệu sau Hampel, Butterworth low-pass, PCA và Min-Max, loại
+subcarrier không sử dụng. Dữ liệu đầu vào được thu trực tiếp ở HT20 với 64
+subcarrier, không có bước gộp từ 192 xuống 64. Dùng
+các nút `1s`, `15s`, `30s`
+ở cuối cửa sổ để đổi khoảng thời gian quan sát. Có thể chỉ định thư mục dữ
+liệu khác bằng `python visualize_csi.py --data-dir DuongDan\Data`.
+
+Sau khi thay đổi các thông số lọc, cần tạo lại dataset và huấn luyện lại model:
+
+```powershell
+python dataset_pipeline.py
+python train.py
+```
+
 ## Cấu trúc thư mục chính
 
 ```text
@@ -131,7 +163,7 @@ dataset_pipeline.py    # Parse, lọc và tạo cửa sổ dataset
 train.py               # Huấn luyện CNN
 realtime_predict.py    # Nhận diện CSI theo thời gian thực
 csi_data_read_parse.py # Phân tích và trực quan hóa CSI
-csi_preprocessing.py   # Mask subcarrier biên, DC và cột zero
+csi_preprocessing.py   # Loại subcarrier nhiễu, lọc và PCA cho HT20/64
 csi_web.html           # Giao diện web tiếng Anh
 csi_web_server.py      # Backend local chạy pipeline bằng venv
 start_csi_web.bat      # Khởi động backend và mở trình duyệt
