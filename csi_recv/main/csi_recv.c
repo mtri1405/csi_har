@@ -1,161 +1,251 @@
+
 #include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
-#include <stdlib.h>
-#include <math.h>
+#include <inttypes.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
 
 #include "nvs_flash.h"
 #include "esp_mac.h"
-#include "rom/ets_sys.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "esp_event.h"
 #include "esp_now.h"
+
 #include "csi_proto.h"
+
+/* ================= CONFIGURATION ================= */
 
 #define CONFIG_LESS_INTERFERENCE_CHANNEL   11
 #define CONFIG_WIFI_BANDWIDTH              WIFI_BW20
+
 #define CONFIG_EXPECTED_CSI_LENGTH         CSI_IQ_BYTES
 
-#define CONFIG_ESP_NOW_PHYMODE             WIFI_PHY_MODE_HT20
-#define CONFIG_ESP_NOW_RATE                WIFI_PHY_RATE_MCS0_LGI
-#define CONFIG_FORCE_GAIN                  0  // Đặt bằng 1 nếu muốn cố định gain sau khi lấy baseline
+#define CONFIG_CSI_QUEUE_LENGTH            64
+#define CONFIG_CSI_TASK_STACK_SIZE         4096
+#define CONFIG_CSI_TASK_PRIORITY           5
 
-#define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
-#define CONFIG_GAIN_CONTROL
+#define CONFIG_UART_BAUDRATE               2000000
 
-static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
+/*
+ * MAC Address of ESP32 Sender.
+ * Sender uses 1A:00:00:00:00:00.
+ *
+ * Receiver must use its own MAC address.
+ */
+static const uint8_t CONFIG_CSI_SEND_MAC[] = {
+    0x1A, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
 static const char *TAG = "csi_recv";
 
-// Hàm trích xuất thông số AGC và FFT gain trực tiếp từ rx_ctrl của ESP32
-// (Dựa trên cách hoạt động chuẩn của phần cứng Espressif Wi-Fi driver)
-static void get_rx_gain_direct(const wifi_pkt_rx_ctrl_t *rx_ctrl, uint8_t *agc_gain, int8_t *fft_gain)
-{
-    if (rx_ctrl) {
-        // Tùy theo phiên bản chip và bản miêu tả rx_ctrl, ta lấy trường rssi hoặc các trường gain tương ứng
-        // Trên ESP32 thông thường, agc và noise_floor phản ánh trạng thái thu sóng
-        *agc_gain = (uint8_t)(rx_ctrl->noise_floor & 0xFF); 
-        *fft_gain = (int8_t)(rx_ctrl->rssi);
-    }
-}
+/* ESP-NOW application payload layout.
+ *
+ * Existing Sender sends:
+ *     uint32_t count
+ *
+ * Existing Receiver reads:
+ *     info->payload + 15
+ *
+ * Verify this offset against the ESP-IDF version and
+ * actual CSI payload layout used by the project.
+ */
+#define CONFIG_RX_ID_OFFSET 15
 
-// Hàm tính hệ số bù biên độ (Compensation gain) dựa trên sự thay đổi gain
-static float calculate_gain_compensation(uint8_t current_agc, int8_t current_fft, 
-                                       uint8_t baseline_agc, int8_t baseline_fft)
-{
-    // Công thức mô phỏng bù trừ biên độ tuyến tính theo lệch Gain (dB scale to linear scale factor)
-    int db_diff = (int)(current_fft - baseline_fft);
-    if (db_diff == 0) {
-        return 1.0f;
-    }
-    // Chuyển đổi độ lệch dB sang hệ số biên độ tuyến tính: 10^(-delta_dB / 20)
-    return powf(10.0f, -((float)db_diff) / 20.0f);
-}
+/* ================= DATA STRUCTURE ================= */
 
-static void wifi_init()
+typedef struct {
+    uint32_t rx_id;
+
+    uint8_t mac[6];
+
+    uint16_t csi_len;
+
+    bool first_word_invalid;
+
+    wifi_pkt_rx_ctrl_t rx_ctrl;
+
+    int8_t csi_data[CSI_IQ_BYTES];
+
+} csi_frame_t;
+
+/* ================= GLOBAL OBJECTS ================= */
+
+static QueueHandle_t csi_queue = NULL;
+
+/*
+ * Statistics:
+ * These counters are updated by CSI callback or UART task.
+ */
+static volatile uint32_t s_callback_count = 0;
+static volatile uint32_t s_queue_drop_count = 0;
+static volatile uint32_t s_invalid_length_count = 0;
+static volatile uint32_t s_invalid_payload_count = 0;
+
+static uint32_t s_uart_count = 0;
+
+/* ================= WIFI INITIALIZATION ================= */
+
+static void wifi_init(void)
 {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    ESP_ERROR_CHECK(esp_netif_init());
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
-    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(ESP_IF_WIFI_STA, CONFIG_WIFI_BANDWIDTH));
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    ESP_ERROR_CHECK(
+        esp_wifi_set_storage(WIFI_STORAGE_RAM)
+    );
+
+    ESP_ERROR_CHECK(
+        esp_wifi_set_bandwidth(
+            WIFI_IF_STA,
+            CONFIG_WIFI_BANDWIDTH
+        )
+    );
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_channel(CONFIG_LESS_INTERFERENCE_CHANNEL, WIFI_SECOND_CHAN_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CONFIG_CSI_SEND_MAC));
+    ESP_ERROR_CHECK(
+        esp_wifi_set_ps(WIFI_PS_NONE)
+    );
+
+    ESP_ERROR_CHECK(
+        esp_wifi_set_channel(
+            CONFIG_LESS_INTERFERENCE_CHANNEL,
+            WIFI_SECOND_CHAN_NONE
+        )
+    );
+
+    /*
+     * IMPORTANT:
+     * Do not set Receiver MAC to Sender MAC.
+     * Receiver keeps its own hardware MAC address.
+     */
 }
 
-static void wifi_esp_now_init(esp_now_peer_info_t peer)
+/* ================= ESP-NOW INITIALIZATION ================= */
+
+static void wifi_esp_now_init(void)
 {
     ESP_ERROR_CHECK(esp_now_init());
-    ESP_ERROR_CHECK(esp_now_set_pmk((uint8_t *)"pmk1234567890123"));
-    esp_now_rate_config_t rate_config = {
-        .phymode = CONFIG_ESP_NOW_PHYMODE,
-        .rate = CONFIG_ESP_NOW_RATE,
-        .ersu = false,
-        .dcm = false
-    };
-    ESP_ERROR_CHECK(esp_now_add_peer(&peer));
-    ESP_ERROR_CHECK(esp_now_set_peer_rate_config(peer.peer_addr, &rate_config));
+
+    /*
+     * No peer registration is required just to receive
+     * unencrypted ESP-NOW packets.
+     *
+     * Sender broadcasts packets.
+     */
 }
 
-static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
+/* ================= CSI CALLBACK ================= */
+
+static void wifi_csi_rx_cb(
+    void *ctx,
+    wifi_csi_info_t *info
+)
 {
-    if (!info || !info->buf) {
-        ESP_LOGW(TAG, "<%s> wifi_csi_cb", esp_err_to_name(ESP_ERR_INVALID_ARG));
+    (void)ctx;
+
+    if (info == NULL || info->buf == NULL) {
         return;
     }
 
-    if (memcmp(info->mac, CONFIG_CSI_SEND_MAC, 6)) {
+    /*
+     * Only accept packets from our Sender.
+     */
+    if (memcmp(
+            info->mac,
+            CONFIG_CSI_SEND_MAC,
+            sizeof(CONFIG_CSI_SEND_MAC)
+        ) != 0) {
         return;
     }
 
+    s_callback_count++;
+
+    /*
+     * Keep a fixed CSI length for compatibility
+     * with the existing preprocessing pipeline.
+     */
     if (info->len != CONFIG_EXPECTED_CSI_LENGTH) {
-        ESP_LOGW(TAG, "Skip CSI frame with length %d; expected %d for HT20",
-                 info->len, CONFIG_EXPECTED_CSI_LENGTH);
+        s_invalid_length_count++;
         return;
     }
 
-    const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
-    static int s_count = 0;
-    float compensate_gain = 1.0f;
-    
-    static uint8_t agc_gain = 0;
-    static int8_t fft_gain = 0;
+    /*
+     * Validate application payload before reading rx_id.
+     */
+    if (info->payload == NULL ||
+        info->payload_len <
+            CONFIG_RX_ID_OFFSET + sizeof(uint32_t)) {
 
-#ifdef CONFIG_GAIN_CONTROL
-    static uint8_t agc_gain_baseline = 0;
-    static int8_t fft_gain_baseline = 0;
-    static int32_t agc_sum = 0;
-    static int32_t fft_sum = 0;
-
-    get_rx_gain_direct(rx_ctrl, &agc_gain, &fft_gain);
-
-    if (s_count < 100) {
-        // Tích lũy 100 gói tin đầu tiên để lấy giá trị trung bình làm Baseline
-        agc_sum += agc_gain;
-        fft_sum += fft_gain;
-        if (s_count == 99) {
-            agc_gain_baseline = (uint8_t)(agc_sum / 100);
-            fft_gain_baseline = (int8_t)(fft_sum / 100);
-            ESP_LOGI(TAG, "Gain Baseline established -> AGC: %d, FFT: %d", agc_gain_baseline, fft_gain_baseline);
-        }
-    } else {
-        compensate_gain = calculate_gain_compensation(agc_gain, fft_gain, agc_gain_baseline, fft_gain_baseline);
-    }
-    
-    ESP_LOGI(TAG, "compensate_gain %.2f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
-#endif
-
-    uint32_t rx_id = *(uint32_t *)(info->payload + 15);
-
-    if (!s_count) {
-        ESP_LOGI(TAG, "================ CSI RECV ================");
-        ets_printf("%s\n", CSI_CSV_HEADER);
+        s_invalid_payload_count++;
+        return;
     }
 
-    ets_printf("CSI_DATA,%d," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
-               rx_id, MAC2STR(info->mac), rx_ctrl->rssi, rx_ctrl->rate, rx_ctrl->sig_mode,
-               rx_ctrl->mcs, rx_ctrl->cwb, rx_ctrl->smoothing, rx_ctrl->not_sounding,
-               rx_ctrl->aggregation, rx_ctrl->stbc, rx_ctrl->fec_coding, rx_ctrl->sgi,
-               rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
-               rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->sig_mode);
+    /*
+     * Allocate frame locally.
+     *
+     * Copy all required data before callback returns.
+     */
+    csi_frame_t frame = {0};
 
-    ets_printf(",%d,%d,\"[%d", info->len, info->first_word_invalid, (int16_t)(compensate_gain * info->buf[0]));
-    for (int i = 1; i < info->len; i++) {
-        ets_printf(",%d", (int16_t)(compensate_gain * info->buf[i]));
+    memcpy(
+        frame.mac,
+        info->mac,
+        sizeof(frame.mac)
+    );
+
+    memcpy(
+        &frame.rx_id,
+        info->payload + CONFIG_RX_ID_OFFSET,
+        sizeof(frame.rx_id)
+    );
+
+    frame.csi_len = info->len;
+
+    frame.first_word_invalid = info->first_word_invalid;
+
+    memcpy(
+        &frame.rx_ctrl,
+        &info->rx_ctrl,
+        sizeof(frame.rx_ctrl)
+    );
+
+    memcpy(
+        frame.csi_data,
+        info->buf,
+        info->len
+    );
+
+    /*
+     * Non-blocking queue operation.
+     *
+     * Never wait for UART inside CSI callback.
+     */
+    if (xQueueSend(csi_queue, &frame, 0) != pdTRUE) {
+        s_queue_drop_count++;
     }
-
-    ets_printf("]\"\n");
-    s_count++;
 }
 
-static void wifi_csi_init()
+/* ================= CSI INITIALIZATION ================= */
+
+static void wifi_csi_init(void)
 {
-    ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
+    ESP_ERROR_CHECK(
+        esp_wifi_set_promiscuous(true)
+    );
 
     wifi_csi_config_t csi_config = {
         .lltf_en           = true,
@@ -166,29 +256,289 @@ static void wifi_csi_init()
         .manu_scale        = false,
         .shift             = false,
     };
-    ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
-    ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(wifi_csi_rx_cb, NULL));
-    ESP_ERROR_CHECK(esp_wifi_set_csi(true));
+
+    ESP_ERROR_CHECK(
+        esp_wifi_set_csi_config(&csi_config)
+    );
+
+    ESP_ERROR_CHECK(
+        esp_wifi_set_csi_rx_cb(
+            wifi_csi_rx_cb,
+            NULL
+        )
+    );
+
+    ESP_ERROR_CHECK(
+        esp_wifi_set_csi(true)
+    );
 }
 
-void app_main()
+/* ================= CSI UART OUTPUT ================= */
+
+/*
+ * Format one CSI frame into a single output buffer.
+ *
+ * This function runs in UART task, NOT in CSI callback.
+ */
+static void print_csi_frame(const csi_frame_t *frame)
 {
+    char output[1024];
+
+    const wifi_pkt_rx_ctrl_t *rx_ctrl =
+        &frame->rx_ctrl;
+
+    int pos = snprintf(
+        output,
+        sizeof(output),
+
+        "CSI_DATA,%" PRIu32
+        ",%02X:%02X:%02X:%02X:%02X:%02X"
+        ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d"
+        ",%d,%d,%d,%d,%d,%d,%d,%d,%d",
+
+        frame->rx_id,
+
+        frame->mac[0],
+        frame->mac[1],
+        frame->mac[2],
+        frame->mac[3],
+        frame->mac[4],
+        frame->mac[5],
+
+        rx_ctrl->rssi,
+        rx_ctrl->rate,
+        rx_ctrl->sig_mode,
+        rx_ctrl->mcs,
+        rx_ctrl->cwb,
+        rx_ctrl->smoothing,
+        rx_ctrl->not_sounding,
+        rx_ctrl->aggregation,
+        rx_ctrl->stbc,
+        rx_ctrl->fec_coding,
+        rx_ctrl->sgi,
+        rx_ctrl->noise_floor,
+        rx_ctrl->ampdu_cnt,
+        rx_ctrl->channel,
+        rx_ctrl->secondary_channel,
+        rx_ctrl->timestamp,
+        rx_ctrl->ant,
+        rx_ctrl->sig_len,
+        rx_ctrl->sig_mode
+    );
+
+    if (pos < 0 || pos >= sizeof(output)) {
+        return;
+    }
+
+    int written = snprintf(
+        output + pos,
+        sizeof(output) - pos,
+        ",%u,%d,\"[%d",
+
+        frame->csi_len,
+        frame->first_word_invalid,
+        frame->csi_data[0]
+    );
+
+    if (written < 0 ||
+        written >= sizeof(output) - pos) {
+        return;
+    }
+
+    pos += written;
+
+    /*
+     * Append remaining CSI I/Q values.
+     */
+    for (int i = 1; i < frame->csi_len; i++) {
+
+        written = snprintf(
+            output + pos,
+            sizeof(output) - pos,
+            ",%d",
+            frame->csi_data[i]
+        );
+
+        if (written < 0 ||
+            written >= sizeof(output) - pos) {
+            return;
+        }
+
+        pos += written;
+    }
+
+    /*
+     * Finish CSV line.
+     */
+    written = snprintf(
+        output + pos,
+        sizeof(output) - pos,
+        "]\"\n"
+    );
+
+    if (written < 0 ||
+        written >= sizeof(output) - pos) {
+        return;
+    }
+
+    /*
+     * One output operation per CSI frame.
+     */
+    printf("%s", output);
+
+    s_uart_count++;
+}
+
+/* ================= UART TASK ================= */
+
+static void csi_uart_task(void *arg)
+{
+    (void)arg;
+
+    csi_frame_t frame;
+
+    uint32_t last_report_tick = xTaskGetTickCount();
+
+    uint32_t last_callback_count = 0;
+    uint32_t last_uart_count = 0;
+
+    /*
+     * Print CSV header once.
+     */
+    printf("%s\n", CSI_CSV_HEADER);
+
+    while (1) {
+
+        /*
+         * Wait for CSI frame from queue.
+         */
+        if (xQueueReceive(
+                csi_queue,
+                &frame,
+                pdMS_TO_TICKS(100)
+            ) == pdTRUE) {
+
+            print_csi_frame(&frame);
+        }
+
+        /*
+         * Report statistics every 5 seconds.
+         */
+        uint32_t now = xTaskGetTickCount();
+
+        if ((now - last_report_tick) >=
+            pdMS_TO_TICKS(5000)) {
+
+            uint32_t callback_count =
+                s_callback_count;
+
+            uint32_t uart_count =
+                s_uart_count;
+
+            ESP_LOGI(
+                TAG,
+                "CSI Stats | Callback: %" PRIu32
+                " (+%" PRIu32 ")"
+                " | UART: %" PRIu32
+                " (+%" PRIu32 ")"
+                " | Queue Drop: %" PRIu32
+                " | Invalid Length: %" PRIu32
+                " | Invalid Payload: %" PRIu32
+                " | Queue Remaining: %u",
+
+                callback_count,
+                callback_count - last_callback_count,
+
+                uart_count,
+                uart_count - last_uart_count,
+
+                s_queue_drop_count,
+                s_invalid_length_count,
+                s_invalid_payload_count,
+
+                (unsigned int)uxQueueMessagesWaiting(csi_queue)
+            );
+
+            last_callback_count = callback_count;
+            last_uart_count = uart_count;
+
+            last_report_tick = now;
+        }
+    }
+}
+
+/* ================= APPLICATION ================= */
+
+void app_main(void)
+{
+    /*
+     * Initialize NVS.
+     */
     esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+        ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+
         ESP_ERROR_CHECK(nvs_flash_erase());
+
         ret = nvs_flash_init();
     }
+
     ESP_ERROR_CHECK(ret);
 
+    /*
+     * Create queue before enabling CSI callback.
+     */
+    csi_queue = xQueueCreate(
+        CONFIG_CSI_QUEUE_LENGTH,
+        sizeof(csi_frame_t)
+    );
+
+    if (csi_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create CSI queue");
+        abort();
+    }
+
+    /*
+     * Initialize Wi-Fi.
+     */
     wifi_init();
 
-    esp_now_peer_info_t peer = {
-        .channel   = CONFIG_LESS_INTERFERENCE_CHANNEL,
-        .ifidx     = WIFI_IF_STA,
-        .encrypt   = false,
-        .peer_addr = {0x68, 0x09, 0x47, 0x9d, 0xca, 0xf8},
-    };
+    /*
+     * Initialize ESP-NOW.
+     */
+    wifi_esp_now_init();
 
-    wifi_esp_now_init(peer);
+    /*
+     * Create UART processing task.
+     */
+    BaseType_t task_result = xTaskCreate(
+        csi_uart_task,
+        "csi_uart_task",
+        CONFIG_CSI_TASK_STACK_SIZE,
+        NULL,
+        CONFIG_CSI_TASK_PRIORITY,
+        NULL
+    );
+
+    if (task_result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create CSI UART task");
+        abort();
+    }
+
+    /*
+     * Enable CSI after queue and task are ready.
+     */
     wifi_csi_init();
+
+    ESP_LOGI(TAG, "================ CSI RECV ================");
+
+    ESP_LOGI(
+        TAG,
+        "Channel: %d | Expected CSI length: %d | Queue: %d",
+
+        CONFIG_LESS_INTERFERENCE_CHANNEL,
+        CONFIG_EXPECTED_CSI_LENGTH,
+        CONFIG_CSI_QUEUE_LENGTH
+    );
 }

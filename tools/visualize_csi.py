@@ -77,12 +77,16 @@ class RealtimeVisualizer:
         self.baudrate = baudrate
         self.model = None
         self.labels = {}
+        self.pca_mean = None
+        self.pca_components = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.prediction_history: deque[tuple[float, int, float]] = deque(maxlen=300)
         self.total_frames = 0
         self.last_prediction_frame = 0
         if model_path:
-            self.model, self.labels = self._load_model(model_path)
+            self.model, self.labels, self.pca_mean, self.pca_components = (
+                self._load_model(model_path)
+            )
         self.duration = DISPLAY_DURATIONS[0]
         self.filter_mode = "none"
         self.running = False
@@ -187,13 +191,20 @@ class RealtimeVisualizer:
             or metadata.get("raw_subcarriers") != RAW_SUBCARRIERS
             or metadata.get("target_subcarriers") != TARGET_SUBCARRIERS
             or metadata.get("pca_components") != PCA_COMPONENTS
+            or "pca_mean" not in metadata
+            or "pca_components_matrix" not in metadata
         ):
             raise ValueError("Checkpoint không khớp cấu hình cửa sổ/subcarrier.")
         labels = {int(key): value for key, value in metadata["labels"].items()}
         model = CSI_CNN(num_classes=int(metadata["num_classes"])).to(self.device)
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
-        return model, labels
+        return (
+            model,
+            labels,
+            np.asarray(metadata["pca_mean"], dtype=np.float64),
+            np.asarray(metadata["pca_components_matrix"], dtype=np.float64),
+        )
 
     def _predict_latest(self, raw: np.ndarray, frame_count: int) -> None:
         if (
@@ -205,7 +216,9 @@ class RealtimeVisualizer:
         self.last_prediction_frame = frame_count
         if frame_count % 2:
             return
-        window = preprocess_window(raw[-WINDOW_SIZE:])
+        window = preprocess_window(
+            raw[-WINDOW_SIZE:], self.pca_mean, self.pca_components
+        )
         tensor = torch.tensor(window, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         with torch.no_grad():
             probabilities = torch.softmax(
@@ -368,6 +381,14 @@ def show_csv_preview(
 
     if not recordings:
         raise RuntimeError(f"Không tìm thấy CSV trong '{data_dir}'.")
+    pca_state = None
+    if pca_source:
+        checkpoint = torch.load(pca_source, map_location="cpu")
+        metadata = checkpoint.get("metadata", {})
+        pca_state = (
+            np.asarray(metadata["pca_mean"], dtype=np.float64),
+            np.asarray(metadata["pca_components_matrix"], dtype=np.float64),
+        )
     figure, axes = plt.subplots(
         len(recordings), 2, figsize=(15, max(5, 4 * len(recordings))), squeeze=False
     )
@@ -384,7 +405,7 @@ def show_csv_preview(
                     ax.text(0.5, 0.5, "Không hỗ trợ định dạng này", ha="center", va="center")
                     ax.set_axis_off()
                 continue
-            processed = preprocess_series(raw)
+            processed = preprocess_series(raw, *(pca_state or (None, None)))
             _draw_chart(
                 axes[row, 0], raw, f"{label} - CSI raw (64 subcarrier)", raw_duration
             )
@@ -543,13 +564,17 @@ def main() -> None:
         "--model",
         help="Checkpoint .pth để bật prediction timeline.",
     )
+    parser.add_argument(
+        "--pca-source",
+        help="Checkpoint .pth chứa PCA fit trên training set cho CSV preview.",
+    )
     args = parser.parse_args()
     if args.dataset:
         show_dataset_preview(args.dataset, args.sample)
     elif args.csv_file:
-        show_csv_preview(csv_file=args.csv_file)
+        show_csv_preview(csv_file=args.csv_file, pca_source=args.pca_source)
     elif args.data_dir:
-        show_csv_preview(data_dir=args.data_dir)
+        show_csv_preview(data_dir=args.data_dir, pca_source=args.pca_source)
     else:
         RealtimeVisualizer(args.port, args.baudrate, args.model).show()
 

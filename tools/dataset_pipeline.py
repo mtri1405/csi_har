@@ -7,7 +7,7 @@ import numpy as np
 from csi_preprocessing import (
     FILTER_CUTOFF_HZ, FILTER_ORDER, PCA_COMPONENTS, RAW_SUBCARRIERS,
     SAMPLE_RATE_HZ, TARGET_SUBCARRIERS, WINDOW_SIZE,
-    preprocess_window,
+    filter_window, fit_pca, transform_pca, normalize_window,
     REMOVED_SUBCARRIER_INDICES, SUBCARRIER_INDICES,
 )
 
@@ -16,14 +16,45 @@ from csi_preprocessing import (
 ACTIONS = {
     "empty": 0,
     "walking": 1,
-    "standing": 2,
+    "standing": 2
 }
 LABEL_NAMES = {
     0: "Phòng trống (Empty)",
     1: "Đang đi lại (Walking)",
-    2: "Đang đứng yên (Standing)",
+    2: "Đang đứng yên (Standing)"
 }
 RAW_LEN = RAW_SUBCARRIERS * 2
+
+
+def stratified_file_split(groups, y, seed=42, val_frac=0.2, test_frac=0.2):
+    """Split complete recording files while preserving label coverage."""
+    groups = np.asarray(groups)
+    y = np.asarray(y)
+    if groups.ndim != 1 or y.ndim != 1 or len(groups) != len(y):
+        raise ValueError("groups and y must be one-dimensional arrays of equal length.")
+
+    rng = np.random.RandomState(seed)
+    train_idx, val_idx, test_idx = [], [], []
+    unique_groups = np.unique(groups)
+    group_labels = np.array([y[np.flatnonzero(groups == group)[0]] for group in unique_groups])
+    for label in np.unique(group_labels):
+        label_groups = unique_groups[group_labels == label]
+        shuffled_groups = label_groups[rng.permutation(len(label_groups))]
+        n_test = max(1, int(round(len(shuffled_groups) * test_frac)))
+        n_val = max(1, int(round(len(shuffled_groups) * val_frac)))
+        n_train = len(shuffled_groups) - n_val - n_test
+        if n_train < 1:
+            raise ValueError(f"Nhãn {label} không đủ file để chia train/valid/test.")
+        train_groups = shuffled_groups[:n_train]
+        val_groups = shuffled_groups[n_train:n_train + n_val]
+        test_groups = shuffled_groups[n_train + n_val:]
+        train_idx.extend(np.flatnonzero(np.isin(groups, train_groups)))
+        val_idx.extend(np.flatnonzero(np.isin(groups, val_groups)))
+        test_idx.extend(np.flatnonzero(np.isin(groups, test_groups)))
+    return tuple(
+        rng.permutation(np.asarray(index, dtype=np.int64))
+        for index in (train_idx, val_idx, test_idx)
+    )
 
 
 # --- 1. ĐỌC DỮ LIỆU TỪ FILE ---
@@ -71,7 +102,7 @@ def parse_csi_file(filepath):
 
 
 # --- 2. QUÉT DỮ LIỆU VÀ CẮT CỬA SỔ ---
-def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
+def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=10):
     """
     Cấu trúc thư mục:
       Data/empty/*.csv     -> nhãn 0
@@ -130,7 +161,9 @@ def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
             n_windows = 0
             for start in range(0, num_frames - window_size + 1, stride):
                 win = cleaned_amp[start:start + window_size, :]
-                X.append(preprocess_window(win))
+                if win.shape[0] != WINDOW_SIZE:
+                    raise ValueError(f"Unexpected window shape: {win.shape}")
+                X.append(filter_window(win))
                 y.append(label)
                 sample_groups.append(os.path.abspath(file))
                 n_windows += 1
@@ -147,10 +180,26 @@ def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
     if not X or expected_keep_indices is None:
         raise ValueError(f"Không tìm thấy file CSI hợp lệ trong '{base_dir}'.")
 
-    X = np.array(X, dtype=np.float32)
+    X = np.array(X, dtype=np.float64)
     y = np.array(y, dtype=np.int64)
-    X = X[..., np.newaxis]
-    return X, y, np.array(sample_groups), np.array(expected_keep_indices, dtype=np.int64)
+    groups = np.array(sample_groups)
+    train_idx, val_idx, test_idx = stratified_file_split(groups, y)
+    pca_mean, pca_components = fit_pca(X[train_idx])
+    X = np.array(
+        [normalize_window(transform_pca(window, pca_mean, pca_components)) for window in X],
+        dtype=np.float32,
+    )[..., np.newaxis]
+    return (
+        X,
+        y,
+        groups,
+        np.array(expected_keep_indices, dtype=np.int64),
+        pca_mean,
+        pca_components,
+        train_idx,
+        val_idx,
+        test_idx,
+    )
 
 
 # --- 3. CHẠY VÀ LƯU DATASET ---
@@ -158,8 +207,11 @@ if __name__ == "__main__":
     DATA_PATH = "Data"
 
     print("--- ĐANG XỬ LÝ VÀ ĐÓNG GÓI DATASET ---")
-    X, y, groups, keep_indices = build_dataset(
-        base_dir=DATA_PATH, window_size=WINDOW_SIZE, stride=5
+    (
+        X, y, groups, keep_indices, pca_mean, pca_components,
+        train_idx, val_idx, test_idx,
+    ) = build_dataset(
+        base_dir=DATA_PATH, window_size=WINDOW_SIZE, stride=10
     )
 
     print("\n--- KẾT QUẢ XỬ LÝ ---")
@@ -172,6 +224,11 @@ if __name__ == "__main__":
         n_samples = int((y == label).sum())
         n_files = len(np.unique(groups[y == label]))
         print(f" - Nhãn {label} ({LABEL_NAMES[label]}): {n_samples} mẫu / {n_files} file")
+    for split_name, split_indices in (
+        ("train", train_idx), ("valid", val_idx), ("test", test_idx)
+    ):
+        split_files = np.unique(groups[split_indices])
+        print(f" - {split_name}: {len(split_files)} file, {len(split_indices)} window")
 
     output_file = "csi_dataset.npz"
     metadata = {
@@ -193,6 +250,13 @@ if __name__ == "__main__":
         y=y,
         groups=groups,
         subcarrier_indices=keep_indices,
+        pca_mean=pca_mean,
+        pca_components=pca_components,
+        train_indices=train_idx,
+        val_indices=val_idx,
+        test_indices=test_idx,
+        split_strategy="stratified_file_60_20_20",
+        split_seed=42,
         label_names_json=json.dumps({str(k): v for k, v in LABEL_NAMES.items()}, ensure_ascii=False),
         metadata_json=json.dumps(metadata),
     )

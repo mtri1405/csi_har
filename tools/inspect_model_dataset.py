@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 from train import CSI_CNN
-from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -9,7 +8,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # --- 1. CHECK DATASET ---
 data = np.load("csi_dataset.npz")
 X, y = data["X"], data["y"]
-groups = data["groups"]
+test_idx = data["test_indices"]
 print("=== DATASET ===")
 print("X.shape =", X.shape, "(N,", X.shape[1], "frames,", X.shape[2], "subcarriers, 1 channel)")
 print("y.shape =", y.shape)
@@ -29,14 +28,8 @@ print("Total params:", f"{total_params:,}")
 print("Trainable params:", f"{trainable_params:,}")
 print("Layers:", [n for n, _ in model.named_modules()])
 
-# --- 3. EVALUATE RESULTS (80/20 test split) ---
+# --- 3. EVALUATE RESULTS (saved stratified window test split) ---
 Xt = np.transpose(X, (0, 3, 1, 2))
-splitter = GroupShuffleSplit(n_splits=100, test_size=1 / 3, random_state=42)
-for train_idx, test_idx in splitter.split(Xt, y, groups):
-    if len(np.unique(y[train_idx])) == len(uniq) and len(np.unique(y[test_idx])) == len(uniq):
-        break
-else:
-    raise ValueError("Không thể tạo test split theo phiên có đủ mọi nhãn.")
 X_test, y_test = Xt[test_idx], y[test_idx]
 X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
 y_test_t = torch.tensor(y_test, dtype=torch.long).to(device)

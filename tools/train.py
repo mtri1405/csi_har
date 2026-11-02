@@ -49,41 +49,6 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def stratified_group_split(y, groups, seed=SEED, val_frac=0.2, test_frac=0.2):
-    """
-    Chia theo FILE (group) nhưng phân tầng theo nhãn: với MỖI nhãn, các file được
-    chia riêng thành train/val/test. Nhờ vậy mọi nhãn chắc chắn có mặt ở cả 3 tập
-    và các cửa sổ chồng lấn của cùng một file không bao giờ nằm ở hai tập khác nhau.
-    """
-    rng = np.random.RandomState(seed)
-    train_idx, val_idx, test_idx = [], [], []
-
-    for c in np.unique(y):
-        files = np.unique(groups[y == c])
-        n = len(files)
-        if n < 3:
-            raise ValueError(
-                f"Nhãn {c} chỉ có {n} file, cần >= 3 file ghi độc lập "
-                "để có đủ train/val/test."
-            )
-        rng.shuffle(files)
-        n_test = max(1, int(round(n * test_frac)))
-        n_val = max(1, int(round(n * val_frac)))
-        n_train = n - n_val - n_test
-        if n_train < 1:
-            n_train, n_val, n_test = n - 2, 1, 1
-
-        parts = (
-            (train_idx, files[:n_train]),
-            (val_idx, files[n_train:n_train + n_val]),
-            (test_idx, files[n_train + n_val:]),
-        )
-        for target, selected in parts:
-            target.extend(np.where((y == c) & np.isin(groups, selected))[0].tolist())
-
-    return np.array(train_idx), np.array(val_idx), np.array(test_idx)
-
-
 def make_loader(X, y, shuffle, pin_memory):
     dataset = TensorDataset(
         torch.tensor(X, dtype=torch.float32),
@@ -132,13 +97,28 @@ def main():
     # --- NẠP DỮ LIỆU ---
     print(f"[*] Đang tải dữ liệu từ {DATASET_FILE}...")
     data = np.load(DATASET_FILE)
-    if "groups" not in data or "subcarrier_indices" not in data:
+    if (
+        "groups" not in data
+        or "subcarrier_indices" not in data
+        or "pca_mean" not in data
+        or "pca_components" not in data
+        or "train_indices" not in data
+        or "val_indices" not in data
+        or "test_indices" not in data
+    ):
         raise ValueError("Dataset thiếu metadata. Hãy chạy lại dataset_pipeline.py.")
 
     X = data["X"]  # (N, WINDOW_SIZE, W, 1)
     y = data["y"]
     groups = data["groups"]
     subcarrier_indices = data["subcarrier_indices"].tolist()
+    pca_mean = data["pca_mean"]
+    pca_components = data["pca_components"]
+    if pca_mean.shape != (TARGET_SUBCARRIERS,) or pca_components.shape != (
+        PCA_COMPONENTS,
+        TARGET_SUBCARRIERS,
+    ):
+        raise ValueError("PCA state trong dataset không khớp cấu hình hiện tại.")
     print(f"    Tổng số mẫu: {X.shape[0]} | Kích thước mẫu: {X.shape[1:]}")
 
     X = np.transpose(X, (0, 3, 1, 2))  # -> (N, 1, WINDOW_SIZE, W)
@@ -161,8 +141,13 @@ def main():
         label_names = DEFAULT_LABEL_NAMES
     label_names = {c: label_names.get(c, f"Class {c}") for c in range(num_classes)}
 
-    # --- CHIA TẬP THEO FILE, PHÂN TẦNG THEO NHÃN ---
-    train_idx, val_idx, test_idx = stratified_group_split(y, groups)
+    # Dataset builder already created one deterministic, stratified window split.
+    train_idx = data["train_indices"]
+    val_idx = data["val_indices"]
+    test_idx = data["test_indices"]
+    all_indices = np.concatenate((train_idx, val_idx, test_idx))
+    if not np.array_equal(np.sort(all_indices), np.arange(len(y))):
+        raise ValueError("Các split window trong dataset không bao phủ đúng toàn bộ dữ liệu.")
     X_train, y_train = X[train_idx], y[train_idx]
     X_val, y_val = X[val_idx], y[val_idx]
     X_test, y_test = X[test_idx], y[test_idx]
@@ -173,11 +158,6 @@ def main():
     print_distribution("test", y_test, unique_classes)
     for name, idx in (("train", train_idx), ("val", val_idx), ("test", test_idx)):
         assert len(np.unique(y[idx])) == num_classes, f"Tập {name} thiếu nhãn!"
-    # Không file nào được nằm ở hai tập
-    assert not (set(groups[train_idx]) & set(groups[val_idx]))
-    assert not (set(groups[train_idx]) & set(groups[test_idx]))
-    assert not (set(groups[val_idx]) & set(groups[test_idx]))
-
     train_loader = make_loader(X_train, y_train, True, use_pin_memory)
     val_loader = make_loader(X_val, y_val, False, use_pin_memory)
     test_loader = make_loader(X_test, y_test, False, use_pin_memory)
@@ -256,6 +236,8 @@ def main():
                         "pca_components": PCA_COMPONENTS,
                         "normalization": "min_max_0_1",
                         "subcarrier_indices": subcarrier_indices,
+                        "pca_mean": pca_mean.tolist(),
+                        "pca_components_matrix": pca_components.tolist(),
                         "labels": {str(k): v for k, v in label_names.items()},
                         "num_classes": num_classes,
                     },

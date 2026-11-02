@@ -115,9 +115,18 @@ python dataset_pipeline.py
 
 Lệnh này tạo file `csi_dataset.npz`.
 
-Trong bước này, pipeline loại bỏ mask đã cấu hình, lọc theo thời gian, giảm
-chiều bằng PCA 10 thành phần và chuẩn hóa từng cửa sổ. Chi tiết được mô tả trong
+Trong bước này, pipeline loại bỏ mask đã cấu hình, lọc theo thời gian, fit PCA
+10 thành phần chỉ trên các window thuộc training set, sau đó dùng cùng PCA
+transform cho mọi window và chuẩn hóa từng cửa sổ. Chi tiết được mô tả trong
 [SUBCARRIER_SELECTION.md](./SUBCARRIER_SELECTION.md).
+
+Mỗi file được xử lý độc lập và được chia thành các window liên tiếp dài
+`60 frame`, không chồng lấn (`stride = 60`). Sau đó các file của từng label
+được xáo trộn bằng seed cố định và chia đều theo file với tỷ lệ gần
+`60% train`, `20% validation`, `20% test`. Tất cả window thuộc cùng một file
+luôn nằm trong cùng một split; không có file nào bị chia giữa train,
+validation và test. Các index split được lưu trong `csi_dataset.npz`, nên bước
+train sử dụng chính xác cùng phép chia đã dùng khi fit PCA.
 
 ### 3. Huấn luyện mô hình
 

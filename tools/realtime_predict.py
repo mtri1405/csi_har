@@ -40,6 +40,8 @@ def load_model(model_path, device):
         or metadata.get("pca_components") != PCA_COMPONENTS
         or metadata.get("subcarrier_indices") != list(SUBCARRIER_INDICES)
         or not indices
+        or "pca_mean" not in metadata
+        or "pca_components_matrix" not in metadata
     ):
         raise ValueError("Checkpoint thiếu cấu hình cửa sổ hoặc subcarrier.")
 
@@ -51,7 +53,13 @@ def load_model(model_path, device):
     model = CSI_CNN(num_classes=num_classes).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()  # khóa BatchNorm, tắt Dropout
-    return model, labels, np.array(indices, dtype=np.int64)
+    return (
+        model,
+        labels,
+        np.array(indices, dtype=np.int64),
+        np.asarray(metadata["pca_mean"], dtype=np.float64),
+        np.asarray(metadata["pca_components_matrix"], dtype=np.float64),
+    )
 
 
 # --- PARSE 1 DÒNG CSI ---
@@ -86,14 +94,14 @@ def parse_csi_raw(line_str, keep_indices):
     return amp
 
 
-def tensorize_window(buffer_array, device):
-    normed = preprocess_window(buffer_array)
+def tensorize_window(buffer_array, device, pca_mean, pca_components):
+    normed = preprocess_window(buffer_array, pca_mean, pca_components)
     tensor = torch.tensor(normed, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
     return tensor.to(device)  # (1, 1, WINDOW_SIZE, W)
 
 
 # --- VÒNG LẶP SUY LUẬN REAL-TIME ---
-def run_realtime(port, baud, model, labels, keep_indices, device, smooth):
+def run_realtime(port, baud, model, labels, keep_indices, device, smooth, pca_mean, pca_components):
     # Tắt DTR/RTS để không kích hoạt reset tự động trên ESP32
     ser = serial.Serial(port, baud, timeout=1, dsrdtr=False, rtscts=False)
     ser.setDTR(False)
@@ -128,7 +136,9 @@ def run_realtime(port, baud, model, labels, keep_indices, device, smooth):
             if frame_count % PREDICT_EVERY != 0:
                 continue
 
-            input_tensor = tensorize_window(np.array(buffer), device)
+            input_tensor = tensorize_window(
+                np.array(buffer), device, pca_mean, pca_components
+            )
             with torch.no_grad():
                 probs = torch.softmax(model(input_tensor), dim=1).cpu().numpy()[0]
 
@@ -164,13 +174,18 @@ def main():
         print(">> Không có GPU, dùng CPU")
 
     try:
-        model, labels, keep_indices = load_model(args.model, device)
+        model, labels, keep_indices, pca_mean, pca_components = load_model(
+            args.model, device
+        )
         print(f">> Đã nạp mô hình từ '{args.model}' ({len(labels)} lớp): {labels}")
     except Exception as e:
         print(f"[LỖI NẠP MODEL]: {e}")
         raise SystemExit(1)
 
-    run_realtime(args.port, args.baudrate, model, labels, keep_indices, device, args.smooth)
+    run_realtime(
+        args.port, args.baudrate, model, labels, keep_indices, device, args.smooth,
+        pca_mean, pca_components,
+    )
 
 
 if __name__ == "__main__":

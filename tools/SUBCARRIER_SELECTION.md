@@ -45,8 +45,10 @@ For both dataset creation and realtime inference:
 4. Apply a Hampel filter per channel to replace temporal spikes.
 5. Apply a fourth-order zero-phase Butterworth low-pass filter.
    The current configuration uses a 100 Hz sample rate and 10 Hz cutoff.
-6. Take a 60-frame window.
-7. Apply PCA with 10 components.
+6. Split each recording independently into consecutive 60-frame windows
+   (`stride = 60`), without crossing file boundaries or overlapping windows.
+7. Fit PCA once on the training-set windows only, then transform every
+   train/validation/test/realtime window with the same mean and 10 components.
 8. Apply min-max normalization to `[0, 1]`.
 
 The CNN therefore receives a tensor with shape:
@@ -55,15 +57,24 @@ The CNN therefore receives a tensor with shape:
 (batch, 1, 60 frames, 10 PCA components)
 ```
 
-The realtime and dataset paths call the same `preprocess_window` function so
-that training and inference use identical transformations. A new dataset and
-checkpoint must be generated after changing this mask or the PCA setting.
+The PCA mean and component matrix are stored in `csi_dataset.npz` and copied
+into the model checkpoint. The dataset builder shuffles the recording files
+within each label with a fixed seed, splits files into approximately 60% train,
+20% validation and 20% test, then fits PCA only on the train windows. All
+windows from one recording stay in one split, and the same saved
+split indices are used by training. This provides a recording-independent
+evaluation, although the small number of files per label means the exact
+percentages can only be approximate.
+The realtime and dataset paths call the same `preprocess_window` transform so
+training and inference use identical transformations.
 
 ## Why use 10 PCA components?
 
-PCA is applied after subcarrier selection and temporal filtering. It finds
-directions that explain the largest variance across the 47 retained
-subcarriers and projects each 60-frame window onto the first 10 directions.
+PCA is fit after subcarrier selection and temporal filtering on the training
+windows only. It finds directions that explain the largest variance across the
+47 retained subcarriers and projects every 60-frame window onto the same first
+10 directions. Fitting separately per window would change the coordinate
+system and can leak window-specific information into the representation.
 This reduces the input width from 47 to 10 while preserving the dominant
 motion-related variation.
 

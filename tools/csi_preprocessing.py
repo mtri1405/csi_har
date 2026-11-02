@@ -4,10 +4,10 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 # Hard setting - DONT CHANGE
 SAMPLE_RATE_HZ = 100.0
-FILTER_CUTOFF_HZ = 10.0
+FILTER_CUTOFF_HZ = 20.0
 FILTER_ORDER = 4
-PCA_COMPONENTS = 10
-WINDOW_SIZE = 60
+PCA_COMPONENTS = 30
+WINDOW_SIZE = 80
 # END
 RAW_SUBCARRIERS = 64
 REMOVED_SUBCARRIER_INDICES = (0, 1, 2, 3, 4, 5, 11, 25, 32, 39, 53, 58, 59, 60, 61, 62, 63)
@@ -73,20 +73,49 @@ def remove_unusable_subcarriers(data, remove_zero_columns=True):
     keep_indices = list(SUBCARRIER_INDICES)
     return data[:, keep_indices], list(REMOVED_SUBCARRIER_INDICES), keep_indices
 
-def pca_reduce(window, n_components=PCA_COMPONENTS):
-    if window.ndim != 2:
-        raise ValueError(f"Expected 2D data, got shape {window.shape}.")
-    if n_components < 1 or n_components > window.shape[1]:
+def filter_window(window):
+    if window.ndim != 2 or window.shape != (WINDOW_SIZE, RAW_SUBCARRIERS):
         raise ValueError(
-            f"n_components must be between 1 and {window.shape[1]}, got {n_components}."
+            f"Expected a window with shape ({WINDOW_SIZE}, {RAW_SUBCARRIERS}), "
+            f"got {window.shape}."
         )
-    centered = window - np.mean(window, axis=0, keepdims=True)
+    selected, _, _ = remove_unusable_subcarriers(window)
+    return butterworth_filter(hampel_filter(selected))
+
+
+def fit_pca(windows, n_components=PCA_COMPONENTS):
+    """Fit one PCA basis from training windows only."""
+    values = np.asarray(windows, dtype=np.float64)
+    if values.ndim != 3 or values.shape[2] != TARGET_SUBCARRIERS:
+        raise ValueError(
+            f"Expected windows with shape (N, frames, {TARGET_SUBCARRIERS}), "
+            f"got {values.shape}."
+        )
+    if n_components < 1 or n_components > TARGET_SUBCARRIERS:
+        raise ValueError(
+            f"n_components must be between 1 and {TARGET_SUBCARRIERS}, got {n_components}."
+        )
+    mean = np.mean(values.reshape(-1, TARGET_SUBCARRIERS), axis=0)
+    centered = values.reshape(-1, TARGET_SUBCARRIERS) - mean
     _, _, vectors = np.linalg.svd(centered, full_matrices=False)
-    vectors = vectors[:n_components]
-    largest_loadings = np.argmax(np.abs(vectors), axis=1)
-    signs = np.sign(vectors[np.arange(n_components), largest_loadings])
+    components = vectors[:n_components]
+    largest_loadings = np.argmax(np.abs(components), axis=1)
+    signs = np.sign(components[np.arange(n_components), largest_loadings])
     signs[signs == 0] = 1.0
-    return centered @ (vectors * signs[:, None]).T
+    return mean, components * signs[:, None]
+
+
+def transform_pca(window, mean, components):
+    values = np.asarray(window, dtype=np.float64)
+    mean = np.asarray(mean, dtype=np.float64)
+    components = np.asarray(components, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != TARGET_SUBCARRIERS:
+        raise ValueError(
+            f"Expected filtered window with {TARGET_SUBCARRIERS} channels, got {values.shape}."
+        )
+    if mean.shape != (TARGET_SUBCARRIERS,) or components.shape[1] != TARGET_SUBCARRIERS:
+        raise ValueError("PCA state does not match the selected subcarrier layout.")
+    return (values - mean) @ components.T
 
 def min_max_scale(data):
     minimum = np.min(data)
@@ -101,19 +130,15 @@ def normalize_window(window):
     return min_max_scale(window)
 
 
-def preprocess_window(window):
-    if window.ndim != 2 or window.shape != (WINDOW_SIZE, RAW_SUBCARRIERS):
-        raise ValueError(
-            f"Expected a window with shape ({WINDOW_SIZE}, {RAW_SUBCARRIERS}), "
-            f"got {window.shape}."
-        )
-    selected, _, _ = remove_unusable_subcarriers(window)
-    filtered = butterworth_filter(hampel_filter(selected))
-    reduced = pca_reduce(filtered)
+def preprocess_window(window, pca_mean=None, pca_components=None):
+    filtered = filter_window(window)
+    if pca_mean is None or pca_components is None:
+        raise ValueError("PCA state is required; fit it on training windows first.")
+    reduced = transform_pca(filtered, pca_mean, pca_components)
     return normalize_window(reduced)
 
 
-def preprocess_series(data):
+def preprocess_series(data, pca_mean=None, pca_components=None):
     """Return a display-ready series after selection, filtering, PCA and scaling."""
     if data.ndim != 2 or data.shape[1] != RAW_SUBCARRIERS:
         raise ValueError(
@@ -128,5 +153,9 @@ def preprocess_series(data):
     if len(selected) < 20:
         selected = np.pad(selected, ((0, 20 - len(selected)), (0, 0)), mode="edge")
     filtered = butterworth_filter(hampel_filter(selected))
-    reduced = pca_reduce(filtered)
+    if pca_mean is None or pca_components is None:
+        mean, components = fit_pca(filtered[np.newaxis, ...])
+    else:
+        mean, components = pca_mean, pca_components
+    reduced = transform_pca(filtered, mean, components)
     return normalize_window(reduced[:original_length])
