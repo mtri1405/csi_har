@@ -134,6 +134,11 @@ train sử dụng chính xác cùng phép chia đã dùng khi fit PCA.
 python train.py
 ```
 
+Mô hình được huấn luyện bằng Focal Loss (`gamma = 2.0`) thay cho
+`CrossEntropyLoss`. Trọng số lớp được dùng làm `alpha`, giúp các mẫu khó phân
+loại có ảnh hưởng lớn hơn trong quá trình cập nhật, đặc biệt khi Standing và
+Empty có đặc trưng gần nhau. Checkpoint lưu lại cấu hình loss đã dùng.
+
 Mô hình tốt nhất được lưu thành `csi_cnn_model.pth`.
 
 Checkpoint chứa cả trọng số và metadata preprocessing (mask subcarrier, kích
@@ -174,9 +179,19 @@ python visualize_csi.py --port COM8 --baudrate 2000000
 Cửa sổ realtime hiển thị dữ liệu raw, heatmap và dữ liệu sau bộ lọc. Có thể đổi
 cửa sổ quan sát `1s`, `5s`, `15s`, thay đổi cổng/baudrate và chọn `Không lọc`, `Hampel`,
 `Butterworth`, `Hampel + Butterworth` hoặc `Full pipeline` ngay trong cửa sổ.
-CSV cụ thể có thể xem bằng `python visualize_csi.py --csv Data\walking\sample.csv`;
-chế độ này có bộ chọn thời gian độc lập cho raw và dữ liệu đã PCA.
+Có thể xem tối đa ba CSV cùng lúc bằng cách truyền nhiều đường dẫn:
 
+```powershell
+python visualize_csi.py --csv Data\empty\a.csv Data\walking\b.csv Data\standing\c.csv
+```
+
+Mỗi file có một hàng riêng. Biểu đồ raw hiển thị đồng thời toàn bộ 64
+subcarrier, chia thành 8 nhóm bằng nhau (8 subcarrier/nhóm), mỗi nhóm có một
+màu riêng. Mỗi plot có nút chọn CSV riêng. Chế độ này có bộ chọn thời gian
+độc lập cho raw và dữ liệu đã PCA, cùng danh sách filter `Không lọc`, `Hampel`,
+`Butterworth`, `Hampel + Butterworth` và `Full pipeline`. Có thể chọn `Tất cả`
+hoặc từng nhóm subcarrier bằng bộ chọn nhóm; dùng nút `Lên`, `Xuống` hoặc
+cuộn chuột trên vùng plot để chuyển giữa các lựa chọn file.
 Vẫn có thể xem CSV đã ghi trước đó bằng:
 
 ```powershell

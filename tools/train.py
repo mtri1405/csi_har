@@ -31,6 +31,7 @@ EPOCHS = 40
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EARLY_STOP_PATIENCE = 10
+FOCAL_GAMMA = 2.0
 DATASET_FILE = "csi_dataset.npz"
 MODEL_FILE = "csi_cnn_model.pth"
 
@@ -55,6 +56,27 @@ def make_loader(X, y, shuffle, pin_memory):
         torch.tensor(y, dtype=torch.long),
     )
     return DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=shuffle, pin_memory=pin_memory)
+
+
+class FocalLoss(nn.Module):
+    """Focal loss with optional per-class alpha weights."""
+
+    def __init__(self, alpha=None, gamma=2.0):
+        super().__init__()
+        if gamma < 0:
+            raise ValueError(f"gamma must be non-negative, got {gamma}.")
+        self.gamma = gamma
+        self.register_buffer("alpha", alpha if alpha is not None else torch.tensor([]))
+
+    def forward(self, logits, targets):
+        log_probabilities = torch.log_softmax(logits, dim=1)
+        log_pt = log_probabilities.gather(1, targets.unsqueeze(1)).squeeze(1)
+        pt = log_pt.exp()
+        focal_factor = (1.0 - pt).pow(self.gamma)
+        if self.alpha.numel() > 0:
+            alpha_t = self.alpha.to(logits.device).gather(0, targets)
+            focal_factor = focal_factor * alpha_t
+        return -(focal_factor * log_pt).mean()
 
 
 def evaluate(model, loader, criterion, device):
@@ -162,16 +184,18 @@ def main():
     val_loader = make_loader(X_val, y_val, False, use_pin_memory)
     test_loader = make_loader(X_test, y_test, False, use_pin_memory)
 
-    # --- MÔ HÌNH, LOSS (CÓ TRỌNG SỐ LỚP), OPTIMIZER ---
+    # --- MÔ HÌNH, FOCAL LOSS (CÓ TRỌNG SỐ LỚP), OPTIMIZER ---
     model = CSI_CNN(num_classes=num_classes).to(device)
 
     counts = np.bincount(y_train, minlength=num_classes)
     class_weights = counts.sum() / (num_classes * np.maximum(counts, 1))
     print(f"[*] Trọng số lớp: {np.round(class_weights, 3).tolist()}")
-    criterion = nn.CrossEntropyLoss(
-        weight=torch.tensor(class_weights, dtype=torch.float32).to(device)
+    criterion = FocalLoss(
+        alpha=torch.tensor(class_weights, dtype=torch.float32).to(device),
+        gamma=FOCAL_GAMMA,
     )
-    # Loss để đánh giá val/test không dùng trọng số, cho dễ so sánh
+    print(f"[*] Focal Loss gamma: {FOCAL_GAMMA:.1f}")
+    # Dùng Cross Entropy không trọng số cho val/test để loss dễ so sánh.
     eval_criterion = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
@@ -240,6 +264,8 @@ def main():
                         "pca_components_matrix": pca_components.tolist(),
                         "labels": {str(k): v for k, v in label_names.items()},
                         "num_classes": num_classes,
+                        "loss": "focal_loss",
+                        "focal_gamma": FOCAL_GAMMA,
                     },
                 },
                 MODEL_FILE,

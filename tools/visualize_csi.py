@@ -36,6 +36,7 @@ from dataset_pipeline import parse_csi_file
 
 DISPLAY_DURATIONS = (1, 5, 15)
 BUFFER_SECONDS = max(DISPLAY_DURATIONS)
+MAX_CSV_PREVIEW_FILES = 3
 FILTER_MODES = {
     "Không lọc": "none",
     "Hampel": "hampel",
@@ -69,6 +70,60 @@ def _draw_chart(axis, data: np.ndarray, title: str, duration: int) -> None:
     axis.set_ylabel("Biên độ / thành phần")
     axis.set_xlim(-max(duration, 1), 0)
     axis.grid(True, alpha=0.25)
+
+
+def _draw_grouped_chart(
+    axis,
+    data: np.ndarray,
+    title: str,
+    duration: int,
+    selected_group: int | None = None,
+    max_groups: int = 8,
+) -> None:
+    """Draw all channels or one equal-sized subcarrier group."""
+    axis.clear()
+    if data.size == 0:
+        axis.text(0.5, 0.5, "Không có dữ liệu", ha="center", va="center")
+        axis.set_axis_off()
+        return
+
+    channel_count = data.shape[1]
+    group_count = max(
+        (candidate for candidate in range(min(max_groups, channel_count), 0, -1)
+         if channel_count % candidate == 0),
+        default=1,
+    )
+    group_size = channel_count // group_count
+    shown = data[-max(1, int(duration * SAMPLE_RATE_HZ)) :]
+    time_axis = np.arange(-len(shown) + 1, 1) / SAMPLE_RATE_HZ
+    colors = plt.get_cmap("tab10")(np.linspace(0, 1, group_count))
+    group_indices = (
+        range(group_count)
+        if selected_group is None
+        else [selected_group]
+    )
+    for group_index in group_indices:
+        start = group_index * group_size
+        end = start + group_size
+        axis.plot(
+            time_axis,
+            shown[:, start:end],
+            color=colors[group_index],
+            linewidth=0.7,
+            alpha=0.65,
+            label=f"Nhóm {group_index + 1}: SC {start}-{end - 1}",
+        )
+        for line in axis.lines[-group_size:]:
+            line.set_label(
+                f"Nhóm {group_index + 1}: SC {start}-{end - 1}"
+                if line is axis.lines[-group_size] else "_nolegend_"
+            )
+    axis.set_title(title)
+    axis.set_xlabel("Thời gian tương đối (s)")
+    axis.set_ylabel("Biên độ / thành phần")
+    axis.set_xlim(-max(duration, 1), 0)
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="upper left", fontsize="x-small", ncol=2)
 
 
 class RealtimeVisualizer:
@@ -358,15 +413,15 @@ class RealtimeVisualizer:
 
 def show_csv_preview(
     data_dir: str | None = None,
-    csv_file: str | None = None,
+    csv_files: list[str] | None = None,
     pca_source: str | None = None,
 ) -> None:
     from dataset_pipeline import ACTIONS, LABEL_NAMES
 
-    if csv_file:
-        recordings = [(os.path.basename(csv_file), parse_csi_file(csv_file))]
-    else:
-        recordings = []
+    initial_files = list(csv_files or [])
+    if len(initial_files) > MAX_CSV_PREVIEW_FILES:
+        raise ValueError(f"Chỉ hỗ trợ xem tối đa {MAX_CSV_PREVIEW_FILES} file cùng lúc.")
+    if not initial_files and data_dir:
         for action_name, label in ACTIONS.items():
             folder = os.path.join(data_dir or "", action_name)
             try:
@@ -375,12 +430,11 @@ def show_csv_preview(
                 )[0]
             except (FileNotFoundError, IndexError):
                 continue
-            recordings.append(
-                (LABEL_NAMES[label], parse_csi_file(os.path.join(folder, filename)))
-            )
+            initial_files.append(os.path.join(folder, filename))
+            if len(initial_files) == MAX_CSV_PREVIEW_FILES:
+                break
 
-    if not recordings:
-        raise RuntimeError(f"Không tìm thấy CSV trong '{data_dir}'.")
+    file_paths = (initial_files + [None] * MAX_CSV_PREVIEW_FILES)[:MAX_CSV_PREVIEW_FILES]
     pca_state = None
     if pca_source:
         checkpoint = torch.load(pca_source, map_location="cpu")
@@ -390,24 +444,42 @@ def show_csv_preview(
             np.asarray(metadata["pca_components_matrix"], dtype=np.float64),
         )
     figure, axes = plt.subplots(
-        len(recordings), 2, figsize=(15, max(5, 4 * len(recordings))), squeeze=False
+        MAX_CSV_PREVIEW_FILES, 2, figsize=(15, 4 * MAX_CSV_PREVIEW_FILES), squeeze=False
     )
-    figure.subplots_adjust(bottom=0.14, hspace=0.55, wspace=0.25)
+    figure.subplots_adjust(bottom=0.30, hspace=0.55, wspace=0.25)
     raw_duration = DISPLAY_DURATIONS[0]
     processed_duration = DISPLAY_DURATIONS[0]
+    preview_filter = "none"
+    selected_group = None
+    scroll_offset = 0
 
     def redraw() -> None:
-        for row, (label, raw) in enumerate(recordings):
+        for row, file_path in enumerate(file_paths):
+            for col in range(2):
+                axes[row, col].clear()
+                axes[row, col].set_axis_on()
+            if not file_path:
+                axes[row, 0].text(0.5, 0.5, f"Plot {row + 1}: chưa chọn file", ha="center", va="center")
+                axes[row, 1].text(0.5, 0.5, "Chưa có dữ liệu", ha="center", va="center")
+                axes[row, 0].set_axis_off()
+                axes[row, 1].set_axis_off()
+                continue
+            label = os.path.basename(file_path)
+            raw = parse_csi_file(file_path)
             if raw.size == 0 or raw.ndim != 2 or raw.shape[1] != RAW_SUBCARRIERS:
                 for col in range(2):
                     ax = axes[row, col]
-                    ax.clear()
                     ax.text(0.5, 0.5, "Không hỗ trợ định dạng này", ha="center", va="center")
                     ax.set_axis_off()
                 continue
+            filtered = apply_filter(raw, preview_filter)
             processed = preprocess_series(raw, *(pca_state or (None, None)))
-            _draw_chart(
-                axes[row, 0], raw, f"{label} - CSI raw (64 subcarrier)", raw_duration
+            _draw_grouped_chart(
+                axes[row, 0],
+                filtered,
+                f"{label} - CSI ({preview_filter}, {group_title()}, nhóm màu)",
+                raw_duration,
+                selected_group=selected_group,
             )
             _draw_chart(
                 axes[row, 1], processed,
@@ -420,18 +492,92 @@ def show_csv_preview(
         )
         figure.canvas.draw_idle()
 
+    def group_title() -> str:
+        if selected_group is None:
+            return "64 subcarrier"
+        start = selected_group * 8
+        return f"subcarrier {start}-{start + 7}"
+
+    def choose_file(row: int) -> None:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        selected = filedialog.askopenfilename(
+            title=f"Chọn CSV cho plot {row + 1}",
+            initialdir=data_dir or os.getcwd(),
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if selected:
+            file_paths[row] = selected
+            redraw()
+
+    def set_filter(label: str) -> None:
+        nonlocal preview_filter
+        preview_filter = FILTER_MODES[label]
+        redraw()
+
+    def set_group(label: str) -> None:
+        nonlocal selected_group
+        selected_group = None if label == "Tất cả" else int(label.split()[-1]) - 1
+        redraw()
+
+    def scroll_controls(step: int) -> None:
+        nonlocal scroll_offset
+        scroll_offset = max(0, min(2, scroll_offset + step))
+        for control in scrollable_controls:
+            control.ax.set_visible(control.row == scroll_offset)
+        figure.canvas.draw_idle()
+
+    def on_scroll(event) -> None:
+        if event.inaxes in axes.flat:
+            scroll_controls(1 if event.button == "down" else -1)
+
+    controls = []
+    scrollable_controls = []
+    for row in range(MAX_CSV_PREVIEW_FILES):
+        button_axis = figure.add_axes([0.02, 0.18 - row * 0.05, 0.18, 0.04])
+        button = Button(button_axis, f"Chọn file cho plot {row + 1}")
+        button.on_clicked(lambda _event, index=row: choose_file(index))
+        button.row = row
+        controls.append(button)
+        scrollable_controls.append(button)
+
+    scroll_up_axis = figure.add_axes([0.02, 0.235, 0.085, 0.035])
+    scroll_down_axis = figure.add_axes([0.115, 0.235, 0.085, 0.035])
+    scroll_up = Button(scroll_up_axis, "Lên")
+    scroll_down = Button(scroll_down_axis, "Xuống")
+    scroll_up.on_clicked(lambda _event: scroll_controls(-1))
+    scroll_down.on_clicked(lambda _event: scroll_controls(1))
+    controls.extend([scroll_up, scroll_down])
+
     for index, selected_duration in enumerate(DISPLAY_DURATIONS):
-        button_axis = figure.add_axes([0.22 + index * 0.09, 0.035, 0.07, 0.05])
+        button_axis = figure.add_axes([0.28 + index * 0.09, 0.08, 0.07, 0.05])
         button = Button(button_axis, f"{selected_duration}s")
         button.on_clicked(
             lambda _event, value=selected_duration: set_raw_duration(value)
         )
+        controls.append(button)
     for index, selected_duration in enumerate(DISPLAY_DURATIONS):
-        button_axis = figure.add_axes([0.58 + index * 0.09, 0.035, 0.07, 0.05])
+        button_axis = figure.add_axes([0.64 + index * 0.09, 0.08, 0.07, 0.05])
         button = Button(button_axis, f"{selected_duration}s")
         button.on_clicked(
             lambda _event, value=selected_duration: set_processed_duration(value)
         )
+        controls.append(button)
+
+    filter_axis = figure.add_axes([0.78, 0.02, 0.20, 0.22])
+    filter_buttons = RadioButtons(filter_axis, list(FILTER_MODES), active=0)
+    filter_buttons.on_clicked(set_filter)
+    controls.append(filter_buttons)
+
+    group_axis = figure.add_axes([0.50, 0.02, 0.25, 0.22])
+    group_labels = ["Tất cả"] + [f"Nhóm {index}" for index in range(1, 9)]
+    group_buttons = RadioButtons(group_axis, group_labels, active=0)
+    group_buttons.on_clicked(set_group)
+    controls.append(group_buttons)
 
     def set_raw_duration(value: int) -> None:
         nonlocal raw_duration
@@ -443,8 +589,10 @@ def show_csv_preview(
         processed_duration = value
         redraw()
 
-    figure.text(0.22, 0.09, "Raw", ha="left")
-    figure.text(0.58, 0.09, "Đã tiền xử lý", ha="left")
+    figure.text(0.28, 0.15, "Raw / filter", ha="left")
+    figure.text(0.64, 0.15, "Đã tiền xử lý", ha="left")
+    figure._csv_preview_controls = controls
+    figure.canvas.mpl_connect("scroll_event", on_scroll)
     redraw()
     plt.show()
 
@@ -548,7 +696,8 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         dest="csv_file",
-        help="Hiển thị một file CSV cụ thể.",
+        nargs="+",
+        help="Hiển thị tối đa 3 file CSV cùng lúc.",
     )
     parser.add_argument(
         "--dataset",
@@ -572,7 +721,7 @@ def main() -> None:
     if args.dataset:
         show_dataset_preview(args.dataset, args.sample)
     elif args.csv_file:
-        show_csv_preview(csv_file=args.csv_file, pca_source=args.pca_source)
+        show_csv_preview(csv_files=args.csv_file, pca_source=args.pca_source)
     elif args.data_dir:
         show_csv_preview(data_dir=args.data_dir, pca_source=args.pca_source)
     else:

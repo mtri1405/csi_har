@@ -33,6 +33,7 @@ monitor_state = {
     "port": None,
     "baudrate": None,
 }
+pca_state = None
 
 
 def python_executable():
@@ -95,6 +96,56 @@ def filter_options(query):
         "hampel_window": number("hampel_window", 7, int),
         "hampel_sigma": number("hampel_sigma", 3.0, float),
     }
+
+
+def load_pca_state():
+    global pca_state
+    if pca_state is not None:
+        return pca_state
+    candidates = (ROOT / "csi_cnn_model.pth", ROOT / "csi_dataset.npz")
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        if candidate.suffix == ".pth":
+            import torch
+            metadata = torch.load(candidate, map_location="cpu").get("metadata", {})
+            if "pca_mean" in metadata and "pca_components_matrix" in metadata:
+                pca_state = (
+                    np.asarray(metadata["pca_mean"], dtype=np.float64),
+                    np.asarray(metadata["pca_components_matrix"], dtype=np.float64),
+                )
+                return pca_state
+        else:
+            with np.load(candidate, allow_pickle=False) as data:
+                if "pca_mean" in data and "pca_components" in data:
+                    pca_state = (data["pca_mean"], data["pca_components"])
+                    return pca_state
+    raise ValueError("Không tìm thấy PCA state. Hãy chạy dataset_pipeline.py hoặc train.py.")
+
+
+def pca_series(data, options):
+    from csi_preprocessing import (
+        normalize_window,
+        remove_unusable_subcarriers,
+        transform_pca,
+    )
+    from csi_visualization import apply_filter
+
+    mode = options["mode"]
+    filter_mode = "hampel_butterworth" if mode == "pipeline" else mode
+    filtered = apply_filter(
+        data,
+        filter_mode,
+        cutoff=options["cutoff"],
+        order=options["order"],
+        hampel_window=options["hampel_window"],
+        hampel_sigma=options["hampel_sigma"],
+    )
+    selected, _, _ = remove_unusable_subcarriers(filtered)
+    mean, components = load_pca_state()
+    transformed = normalize_window(transform_pca(selected, mean, components))
+    count = max(1, int(options["duration"] * options["sample_rate_hz"]))
+    return transformed[-count:].T.tolist()
 
 
 def start_monitor(port, baudrate):
@@ -184,8 +235,13 @@ def monitor_payload(query):
             "subcarrier": options["subcarrier"],
             "raw": [],
             "filtered": [],
+            "pca": [],
+            "pca_components": 0,
         }
     payload = summarize_series(samples, **options)
+    options["sample_rate_hz"] = payload["sample_rate_hz"]
+    payload["pca"] = pca_series(samples, options)
+    payload["pca_components"] = len(payload["pca"])
     payload.update({"running": running, "error": error})
     return payload
 
@@ -302,7 +358,12 @@ class Handler(BaseHTTPRequestHandler):
                 if data.size == 0:
                     raise ValueError("CSV không có frame CSI hợp lệ.")
                 from csi_visualization import summarize_series
-                self.send_json(summarize_series(data, **filter_options(query)))
+                options = filter_options(query)
+                payload = summarize_series(data, **options)
+                options["sample_rate_hz"] = payload["sample_rate_hz"]
+                payload["pca"] = pca_series(data, options)
+                payload["pca_components"] = len(payload["pca"])
+                self.send_json(payload)
             except (FileNotFoundError, ValueError, OSError) as exc:
                 self.send_json({"error": str(exc)}, 400)
             return

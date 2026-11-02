@@ -246,7 +246,7 @@
       <div id="monitorStatus" class="monitor-status">Choose a CSV or start live view from the selected serial port.</div>
       <div class="chart-grid">
         <div class="chart-card"><h3>Raw amplitude · selected subcarrier</h3><canvas id="rawChart"></canvas></div>
-        <div class="chart-card"><h3>Filtered amplitude · selected subcarrier</h3><canvas id="filteredChart"></canvas></div>
+        <div class="chart-card"><h3 id="processedChartTitle">PCA processed</h3><canvas id="filteredChart"></canvas></div>
       </div>
       <p class="hint">The monitor reads the same 64-subcarrier layout used by collection, dataset processing, training, and realtime prediction. It does not modify files in Data.</p>
     </section>
@@ -441,9 +441,49 @@
       context.fillText(`min ${minimum.toFixed(2)}  max ${maximum.toFixed(2)}`, 12, 16);
     }
 
+    function drawPcaSeries(canvasId, series) {
+      const canvas = $(canvasId);
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      const width = rect.width;
+      const height = rect.height;
+      context.fillStyle = "#07101d";
+      context.fillRect(0, 0, width, height);
+      if (!series || !series.length || !series[0].length) {
+        context.fillStyle = "#8da4c2";
+        context.fillText("Waiting for PCA data...", 14, 24);
+        return;
+      }
+      const values = series.flat();
+      const minimum = Math.min(...values);
+      const maximum = Math.max(...values);
+      const spread = Math.max(maximum - minimum, 1e-8);
+      const colors = ["#42a5ff", "#ffb454", "#3cdb9a", "#ff6f89", "#b58cff",
+        "#61e7ff", "#f28f6b", "#d4e157", "#a8e6cf", "#ff8b94"];
+      series.forEach((component, componentIndex) => {
+        context.strokeStyle = colors[componentIndex % colors.length];
+        context.lineWidth = 1;
+        context.beginPath();
+        component.forEach((value, index) => {
+          const x = 10 + (width - 20) * index / Math.max(1, component.length - 1);
+          const y = height - 18 - (height - 28) * (value - minimum) / spread;
+          if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+        });
+        context.stroke();
+      });
+      context.fillStyle = "#8da4c2";
+      context.fillText(`PCA components: ${series.length}`, 12, 16);
+    }
+
     function renderMonitor(data) {
       drawSeries("rawChart", data.raw, "#42a5ff");
-      drawSeries("filteredChart", data.filtered, "#3cdb9a");
+      drawPcaSeries("filteredChart", data.pca);
+      $("processedChartTitle").textContent =
+        `PCA processed · ${data.pca_components || 0} components`;
       const source = monitorRunning ? "live serial" : "recorded CSV";
       $("monitorStatus").textContent =
         `${source} · ${data.frames || 0} frames · subcarrier ${data.subcarrier ?? $("viewSubcarrier").value}` +
