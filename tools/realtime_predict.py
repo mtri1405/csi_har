@@ -10,8 +10,9 @@ import torch
 from csi_model import CSI_CNN
 from csi_preprocessing import (
     RAW_SUBCARRIERS,
-    REMOVED_SUBCARRIER_INDICES,
+    PCA_COMPONENTS,
     TARGET_SUBCARRIERS,
+    SUBCARRIER_INDICES,
     WINDOW_SIZE,
     preprocess_window,
 )
@@ -36,8 +37,8 @@ def load_model(model_path, device):
         metadata.get("window_size") != WINDOW_SIZE
         or metadata.get("raw_subcarriers") != RAW_SUBCARRIERS
         or metadata.get("target_subcarriers") != TARGET_SUBCARRIERS
-        or metadata.get("removed_subcarrier_indices")
-        != list(REMOVED_SUBCARRIER_INDICES)
+        or metadata.get("pca_components") != PCA_COMPONENTS
+        or metadata.get("subcarrier_indices") != list(SUBCARRIER_INDICES)
         or not indices
     ):
         raise ValueError("Checkpoint thiếu cấu hình cửa sổ hoặc subcarrier.")
@@ -78,11 +79,11 @@ def parse_csi_raw(line_str, keep_indices):
     if np.isnan(amp).any() or np.isinf(amp).any():
         return None
 
-    if not keep_indices or max(keep_indices) >= TARGET_SUBCARRIERS:
+    if keep_indices.tolist() != list(SUBCARRIER_INDICES):
         raise ValueError(
             "Checkpoint không chứa indices subcarrier hợp lệ trên layout 64 kênh."
         )
-    return amp[keep_indices]
+    return amp
 
 
 def tensorize_window(buffer_array, device):

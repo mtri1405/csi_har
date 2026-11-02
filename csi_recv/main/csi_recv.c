@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "nvs_flash.h"
-
 #include "esp_mac.h"
 #include "rom/ets_sys.h"
 #include "esp_log.h"
@@ -11,24 +11,45 @@
 #include "esp_netif.h"
 #include "esp_now.h"
 #include "csi_proto.h"
-// #include "esp_csi_gain_ctrl.h"
 
 #define CONFIG_LESS_INTERFERENCE_CHANNEL   11
+#define CONFIG_WIFI_BANDWIDTH              WIFI_BW20
+#define CONFIG_EXPECTED_CSI_LENGTH         CSI_IQ_BYTES
 
-#define CONFIG_WIFI_BANDWIDTH           WIFI_BW20
-#define CONFIG_EXPECTED_CSI_LENGTH      CSI_IQ_BYTES
-
-
-#define CONFIG_ESP_NOW_PHYMODE           WIFI_PHY_MODE_HT20
-#define CONFIG_ESP_NOW_RATE             WIFI_PHY_RATE_MCS0_LGI
-#define CONFIG_FORCE_GAIN                   0
-
+#define CONFIG_ESP_NOW_PHYMODE             WIFI_PHY_MODE_HT20
+#define CONFIG_ESP_NOW_RATE                WIFI_PHY_RATE_MCS0_LGI
+#define CONFIG_FORCE_GAIN                  0  // Đặt bằng 1 nếu muốn cố định gain sau khi lấy baseline
 
 #define ESP_IF_WIFI_STA ESP_MAC_WIFI_STA
-
+#define CONFIG_GAIN_CONTROL
 
 static const uint8_t CONFIG_CSI_SEND_MAC[] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
 static const char *TAG = "csi_recv";
+
+// Hàm trích xuất thông số AGC và FFT gain trực tiếp từ rx_ctrl của ESP32
+// (Dựa trên cách hoạt động chuẩn của phần cứng Espressif Wi-Fi driver)
+static void get_rx_gain_direct(const wifi_pkt_rx_ctrl_t *rx_ctrl, uint8_t *agc_gain, int8_t *fft_gain)
+{
+    if (rx_ctrl) {
+        // Tùy theo phiên bản chip và bản miêu tả rx_ctrl, ta lấy trường rssi hoặc các trường gain tương ứng
+        // Trên ESP32 thông thường, agc và noise_floor phản ánh trạng thái thu sóng
+        *agc_gain = (uint8_t)(rx_ctrl->noise_floor & 0xFF); 
+        *fft_gain = (int8_t)(rx_ctrl->rssi);
+    }
+}
+
+// Hàm tính hệ số bù biên độ (Compensation gain) dựa trên sự thay đổi gain
+static float calculate_gain_compensation(uint8_t current_agc, int8_t current_fft, 
+                                       uint8_t baseline_agc, int8_t baseline_fft)
+{
+    // Công thức mô phỏng bù trừ biên độ tuyến tính theo lệch Gain (dB scale to linear scale factor)
+    int db_diff = (int)(current_fft - baseline_fft);
+    if (db_diff == 0) {
+        return 1.0f;
+    }
+    // Chuyển đổi độ lệch dB sang hệ số biên độ tuyến tính: 10^(-delta_dB / 20)
+    return powf(10.0f, -((float)db_diff) / 20.0f);
+}
 
 static void wifi_init()
 {
@@ -42,7 +63,6 @@ static void wifi_init()
     ESP_ERROR_CHECK(esp_wifi_set_bandwidth(ESP_IF_WIFI_STA, CONFIG_WIFI_BANDWIDTH));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_channel(CONFIG_LESS_INTERFERENCE_CHANNEL, WIFI_SECOND_CHAN_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, CONFIG_CSI_SEND_MAC));
@@ -54,13 +74,12 @@ static void wifi_esp_now_init(esp_now_peer_info_t peer)
     ESP_ERROR_CHECK(esp_now_set_pmk((uint8_t *)"pmk1234567890123"));
     esp_now_rate_config_t rate_config = {
         .phymode = CONFIG_ESP_NOW_PHYMODE,
-        .rate = CONFIG_ESP_NOW_RATE,//  WIFI_PHY_RATE_MCS0_LGI,
+        .rate = CONFIG_ESP_NOW_RATE,
         .ersu = false,
         .dcm = false
     };
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
     ESP_ERROR_CHECK(esp_now_set_peer_rate_config(peer.peer_addr, &rate_config));
-
 }
 
 static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
@@ -83,23 +102,32 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     const wifi_pkt_rx_ctrl_t *rx_ctrl = &info->rx_ctrl;
     static int s_count = 0;
     float compensate_gain = 1.0f;
+    
     static uint8_t agc_gain = 0;
     static int8_t fft_gain = 0;
-#if CONFIG_GAIN_CONTROL
+
+#ifdef CONFIG_GAIN_CONTROL
     static uint8_t agc_gain_baseline = 0;
     static int8_t fft_gain_baseline = 0;
-    esp_csi_gain_ctrl_get_rx_gain(rx_ctrl, &agc_gain, &fft_gain);
+    static int32_t agc_sum = 0;
+    static int32_t fft_sum = 0;
+
+    get_rx_gain_direct(rx_ctrl, &agc_gain, &fft_gain);
+
     if (s_count < 100) {
-        esp_csi_gain_ctrl_record_rx_gain(agc_gain, fft_gain);
-    } else if (s_count == 100) {
-        esp_csi_gain_ctrl_get_rx_gain_baseline(&agc_gain_baseline, &fft_gain_baseline);
-#if CONFIG_FORCE_GAIN
-        esp_csi_gain_ctrl_set_rx_force_gain(agc_gain_baseline, fft_gain_baseline);
-        ESP_LOGD(TAG, "fft_force %d, agc_force %d", fft_gain_baseline, agc_gain_baseline);
-#endif
+        // Tích lũy 100 gói tin đầu tiên để lấy giá trị trung bình làm Baseline
+        agc_sum += agc_gain;
+        fft_sum += fft_gain;
+        if (s_count == 99) {
+            agc_gain_baseline = (uint8_t)(agc_sum / 100);
+            fft_gain_baseline = (int8_t)(fft_sum / 100);
+            ESP_LOGI(TAG, "Gain Baseline established -> AGC: %d, FFT: %d", agc_gain_baseline, fft_gain_baseline);
+        }
+    } else {
+        compensate_gain = calculate_gain_compensation(agc_gain, fft_gain, agc_gain_baseline, fft_gain_baseline);
     }
-    esp_csi_gain_ctrl_get_gain_compensation(&compensate_gain, agc_gain, fft_gain);
-    ESP_LOGI(TAG, "compensate_gain %f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
+    
+    ESP_LOGI(TAG, "compensate_gain %.2f, agc_gain %d, fft_gain %d", compensate_gain, agc_gain, fft_gain);
 #endif
 
     uint32_t rx_id = *(uint32_t *)(info->payload + 15);
@@ -116,7 +144,6 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
                rx_ctrl->noise_floor, rx_ctrl->ampdu_cnt, rx_ctrl->channel, rx_ctrl->secondary_channel,
                rx_ctrl->timestamp, rx_ctrl->ant, rx_ctrl->sig_len, rx_ctrl->sig_mode);
 
-
     ets_printf(",%d,%d,\"[%d", info->len, info->first_word_invalid, (int16_t)(compensate_gain * info->buf[0]));
     for (int i = 1; i < info->len; i++) {
         ets_printf(",%d", (int16_t)(compensate_gain * info->buf[i]));
@@ -132,8 +159,8 @@ static void wifi_csi_init()
 
     wifi_csi_config_t csi_config = {
         .lltf_en           = true,
-        .htltf_en          = true,
-        .stbc_htltf2_en    = true,
+        .htltf_en          = false,
+        .stbc_htltf2_en    = false,
         .ltf_merge_en      = true,
         .channel_filter_en = true,
         .manu_scale        = false,
@@ -146,9 +173,6 @@ static void wifi_csi_init()
 
 void app_main()
 {
-    /**
-     * @brief Initialize NVS
-     */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -156,15 +180,7 @@ void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
-    /**
-     * @brief Initialize Wi-Fi
-     */
     wifi_init();
-
-    /**
-     * @brief Initialize ESP-NOW
-     *        ESP-NOW protocol see: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html
-     */
 
     esp_now_peer_info_t peer = {
         .channel   = CONFIG_LESS_INTERFERENCE_CHANNEL,
@@ -174,6 +190,5 @@ void app_main()
     };
 
     wifi_esp_now_init(peer);
-
     wifi_csi_init();
 }

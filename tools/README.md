@@ -35,6 +35,26 @@ deactivate
 
 ## Quy trình thực hiện
 
+### Cấu hình CSI cố định
+
+Workflow nhận 64 subcarrier HT20, loại bỏ 17 vị trí cố định và dùng PCA còn
+10 thành phần cho model:
+
+| Thành phần | Giá trị bắt buộc |
+| --- | --- |
+| CSI complex sample mỗi frame | `64` |
+| Giá trị I/Q trong CSV `data` | `128` (`I0,Q0,...,I63,Q63`) |
+| Biên độ sau parse | `(frames, 64)` |
+| Sau mask subcarrier | `(frames, 47)` |
+| Cửa sổ model | `(60 frames, 10 PCA components)` |
+| Realtime checkpoint indices | 47 chỉ số được giữ lại |
+
+Không đổi riêng một bước sang layout khác. Nếu thay đổi mask,
+`PCA_COMPONENTS` hoặc `TARGET_SUBCARRIERS` trong `csi_preprocessing.py`, phải
+tạo lại dataset và train lại checkpoint trước khi chạy realtime. Firmware dùng
+`CSI_SUBCARRIERS` và `CSI_IQ_BYTES` trong
+`shared/csi_proto/include/csi_proto.h` làm nguồn sự thật.
+
 ## Chạy giao diện web
 
 Giao diện web không thể tự kích hoạt `venv` hoặc chạy tiến trình Python trực
@@ -58,6 +78,8 @@ Sau đó mở `http://127.0.0.1:8765/`. Giao diện cho phép:
 - Chọn nhãn hành động, thời gian ghi và thời gian đếm ngược.
 - Phát âm thanh khi đếm ngược, bắt đầu và kết thúc ghi.
 - Chạy tạo dataset, train CNN và realtime prediction.
+- Xem CSV hoặc CSI live trên cùng trang, chọn subcarrier 0-63 và tinh chỉnh
+  chế độ/tham số bộ lọc mà không sửa file dữ liệu.
 - Theo dõi log stdout/stderr của tiến trình Python và dừng realtime prediction.
 
 Nếu không muốn dùng web, có thể chạy trực tiếp từng script bằng Python trong
@@ -93,8 +115,8 @@ python dataset_pipeline.py
 
 Lệnh này tạo file `csi_dataset.npz`.
 
-Trong bước này, pipeline loại bỏ các subcarrier biên, subcarrier DC ở giữa và
-các cột có giá trị 0 trong toàn bộ file. Chi tiết lựa chọn được mô tả trong
+Trong bước này, pipeline loại bỏ mask đã cấu hình, lọc theo thời gian, giảm
+chiều bằng PCA 10 thành phần và chuẩn hóa từng cửa sổ. Chi tiết được mô tả trong
 [SUBCARRIER_SELECTION.md](./SUBCARRIER_SELECTION.md).
 
 ### 3. Huấn luyện mô hình
@@ -126,27 +148,31 @@ thay đổi xem tại
 
 ## Công cụ phân tích CSI
 
-`csi_data_read_parse.py` là công cụ trực quan hóa/phân tích CSI có sẵn trong
-repo. Có thể chạy bằng:
+`csi_data_read_parse.py` và `visualize_csi.py` là các công cụ trực quan
+hóa/phân tích CSI có sẵn trong repo. Cả hai đều kiểm tra layout 64 subcarrier.
+Có thể chạy bằng:
 
 ```powershell
 python csi_data_read_parse.py
 ```
 
-Để so sánh dữ liệu của file đầu tiên trong mỗi nhãn trước và sau bước xử lý,
-chạy công cụ sau từ thư mục `tools`:
+Để visualize CSI trực tiếp từ serial, chạy công cụ sau từ thư mục `tools`:
 
 ```powershell
-python visualize_csi.py
+python visualize_csi.py --port COM8 --baudrate 2000000
 ```
 
-Cửa sổ hiển thị đồ thị đường (mỗi đường là một thành phần PCA) cho dữ liệu chưa
-xử lý và dữ liệu sau Hampel, Butterworth low-pass, PCA và Min-Max, loại
-subcarrier không sử dụng. Dữ liệu đầu vào được thu trực tiếp ở HT20 với 64
-subcarrier, không có bước gộp từ 192 xuống 64. Dùng
-các nút `1s`, `15s`, `30s`
-ở cuối cửa sổ để đổi khoảng thời gian quan sát. Có thể chỉ định thư mục dữ
-liệu khác bằng `python visualize_csi.py --data-dir DuongDan\Data`.
+Cửa sổ realtime hiển thị dữ liệu raw, heatmap và dữ liệu sau bộ lọc. Có thể đổi
+cửa sổ quan sát `1s`, `5s`, `15s`, thay đổi cổng/baudrate và chọn `Không lọc`, `Hampel`,
+`Butterworth`, `Hampel + Butterworth` hoặc `Full pipeline` ngay trong cửa sổ.
+CSV cụ thể có thể xem bằng `python visualize_csi.py --csv Data\walking\sample.csv`;
+chế độ này có bộ chọn thời gian độc lập cho raw và dữ liệu đã PCA.
+
+Vẫn có thể xem CSV đã ghi trước đó bằng:
+
+```powershell
+python visualize_csi.py --data-dir Data
+```
 
 Sau khi thay đổi các thông số lọc, cần tạo lại dataset và huấn luyện lại model:
 
@@ -162,10 +188,15 @@ record_to_csv.py       # Thu CSI và ghi CSV
 dataset_pipeline.py    # Parse, lọc và tạo cửa sổ dataset
 train.py               # Huấn luyện CNN
 realtime_predict.py    # Nhận diện CSI theo thời gian thực
-csi_data_read_parse.py # Phân tích và trực quan hóa CSI
-csi_preprocessing.py   # Loại subcarrier nhiễu, lọc và PCA cho HT20/64
+csi_visualization.py   # Parse/lọc dùng chung cho web và visualize_csi.py
+csi_data_read_parse.py # Phân tích và trực quan hóa CSI legacy
+csi_preprocessing.py   # Mask subcarrier, lọc, PCA và chuẩn hóa
 csi_web.html           # Giao diện web tiếng Anh
 csi_web_server.py      # Backend local chạy pipeline bằng venv
 start_csi_web.bat      # Khởi động backend và mở trình duyệt
 requirements.txt       # Dependency của dự án
 ```
+Xem dữ liệu
+python visualize_csi.py --port COM8 --baudrate 2000000 --model csi_cnn_model.pth
+
+python visualize_csi.py --port COM8 --baudrate 2000000

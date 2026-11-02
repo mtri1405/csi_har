@@ -14,9 +14,10 @@ phải dự đoán ETA hoặc thời gian hoàn thành hành động.
 Các hằng số dùng chung được đặt trong `csi_preprocessing.py`:
 
 - Tần số mẫu kỳ vọng: `10 Hz`.
-- Kích thước cửa sổ: `30 frame`.
-- Bộ lọc Butterworth thông thấp: bậc `4`, cutoff `3 Hz`.
-- Chuẩn hóa Z-score theo từng cửa sổ.
+- Kích thước cửa sổ: `60 frame`.
+- Bộ lọc Butterworth thông thấp: bậc `4`, cutoff `4 Hz`.
+- Giữ nguyên đủ `64 subcarrier`; không loại mask hoặc PCA giảm chiều.
+- Chuẩn hóa Min-Max về `[0, 1]` theo từng cửa sổ.
 
 `dataset_pipeline.py` và `realtime_predict.py` dùng cùng các hằng số này.
 Dataset cũng lưu chính xác danh sách index subcarrier được giữ lại. Realtime
@@ -97,7 +98,7 @@ realtime prediction.
 ## Giới hạn còn lại
 
 Bộ lọc offline hiện vẫn sử dụng `filtfilt` trên toàn bộ file trong lúc tạo
-dataset và trên cửa sổ 30 frame trong realtime. Cách này đã được kiểm tra
+Dataset và trên cửa sổ 60 frame trong realtime. Cách này đã được kiểm tra
 shape, cutoff và chuẩn hóa để nhất quán cấu hình, nhưng điều kiện biên của
 `filtfilt` vẫn có thể khác nhau. Nếu cần độ chính xác cao hơn nữa, bước tiếp
 theo là chuyển cả train và realtime sang cùng một bộ lọc causal có state hoặc

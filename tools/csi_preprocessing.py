@@ -2,27 +2,23 @@ import numpy as np
 from scipy.signal import butter, filtfilt
 from numpy.lib.stride_tricks import sliding_window_view
 
-
+# Hard setting - DONT CHANGE
 SAMPLE_RATE_HZ = 100.0
 FILTER_CUTOFF_HZ = 10.0
 FILTER_ORDER = 4
 PCA_COMPONENTS = 10
 WINDOW_SIZE = 60
-
+# END
 RAW_SUBCARRIERS = 64
-TARGET_SUBCARRIERS = 64
-REMOVED_SUBCARRIER_INDICES = (
-    *range(0, 6),
-    11,
-    25,
-    32,
-    39,
-    53,
-    *range(58, 64),
+REMOVED_SUBCARRIER_INDICES = (0, 1, 2, 3, 4, 5, 11, 25, 32, 39, 53, 58, 59, 60, 61, 62, 63)
+SUBCARRIER_INDICES = tuple(
+    index for index in range(RAW_SUBCARRIERS)
+    if index not in REMOVED_SUBCARRIER_INDICES
 )
+TARGET_SUBCARRIERS = len(SUBCARRIER_INDICES)
 
 
-def hampel_filter(data, window_size=7, n_sigma=3.0):
+def hampel_filter(data, window_size=5, n_sigma=3.0):
     """Vectorized Hampel filter removing spikes/outliers per subcarrier."""
     if data.ndim != 2:
         raise ValueError(f"Expected 2D data, got shape {data.shape}.")
@@ -55,32 +51,27 @@ def butterworth_filter(data, cutoff=FILTER_CUTOFF_HZ, order=FILTER_ORDER, fs=SAM
     b, a = butter(order, normal_cutoff, btype="low", analog=False)
     return filtfilt(b, a, data, axis=0)
 
-
+# No use
 def preprocess_csi(data):
-    """Validate 64-channel CSI and remove temporal spikes."""
-    if data.ndim != 2 or data.shape[1] != TARGET_SUBCARRIERS:
+    """Validate raw CSI and remove temporal spikes before window processing."""
+    if data.ndim != 2 or data.shape[1] != RAW_SUBCARRIERS:
         raise ValueError(
-            f"Expected CSI data with shape (Total_Frames, {TARGET_SUBCARRIERS}), "
+            f"Expected CSI data with shape (Total_Frames, {RAW_SUBCARRIERS}), "
             f"got {data.shape}."
         )
     data = np.asarray(data, dtype=np.float64)
-    data = hampel_filter(data)
+    # data = hampel_filter(data)
     return data
 
 
 def remove_unusable_subcarriers(data, remove_zero_columns=True):
-    if data.ndim != 2 or data.shape[1] != TARGET_SUBCARRIERS:
+    if data.ndim != 2 or data.shape[1] != RAW_SUBCARRIERS:
         raise ValueError(
             f"Expected CSI amplitude data with shape "
-            f"(frames, {TARGET_SUBCARRIERS}), got {data.shape}."
+            f"(frames, {RAW_SUBCARRIERS}), got {data.shape}."
         )
-    remove_indices = set(REMOVED_SUBCARRIER_INDICES)
-    if remove_zero_columns:
-        zero_columns = np.all(data == 0, axis=0)
-        remove_indices.update(np.flatnonzero(zero_columns).tolist())
-    keep_indices = [i for i in range(data.shape[1]) if i not in remove_indices]
-    return data[:, keep_indices], sorted(remove_indices), keep_indices
-
+    keep_indices = list(SUBCARRIER_INDICES)
+    return data[:, keep_indices], list(REMOVED_SUBCARRIER_INDICES), keep_indices
 
 def pca_reduce(window, n_components=PCA_COMPONENTS):
     if window.ndim != 2:
@@ -92,12 +83,10 @@ def pca_reduce(window, n_components=PCA_COMPONENTS):
     centered = window - np.mean(window, axis=0, keepdims=True)
     _, _, vectors = np.linalg.svd(centered, full_matrices=False)
     vectors = vectors[:n_components]
-    # SVD signs are arbitrary; fix them so consecutive windows use a stable orientation.
     largest_loadings = np.argmax(np.abs(vectors), axis=1)
     signs = np.sign(vectors[np.arange(n_components), largest_loadings])
     signs[signs == 0] = 1.0
     return centered @ (vectors * signs[:, None]).T
-
 
 def min_max_scale(data):
     minimum = np.min(data)
@@ -113,8 +102,31 @@ def normalize_window(window):
 
 
 def preprocess_window(window):
-    if window.ndim != 2 or window.shape[0] != WINDOW_SIZE:
-        raise ValueError(f"Expected a window with shape ({WINDOW_SIZE}, subcarriers), got {window.shape}.")
-    filtered = butterworth_filter(hampel_filter(window))
+    if window.ndim != 2 or window.shape != (WINDOW_SIZE, RAW_SUBCARRIERS):
+        raise ValueError(
+            f"Expected a window with shape ({WINDOW_SIZE}, {RAW_SUBCARRIERS}), "
+            f"got {window.shape}."
+        )
+    selected, _, _ = remove_unusable_subcarriers(window)
+    filtered = butterworth_filter(hampel_filter(selected))
     reduced = pca_reduce(filtered)
     return normalize_window(reduced)
+
+
+def preprocess_series(data):
+    """Return a display-ready series after selection, filtering, PCA and scaling."""
+    if data.ndim != 2 or data.shape[1] != RAW_SUBCARRIERS:
+        raise ValueError(
+            f"Expected CSI data with shape (frames, {RAW_SUBCARRIERS}), got {data.shape}."
+        )
+    selected, _, _ = remove_unusable_subcarriers(data)
+    original_length = len(selected)
+    if original_length < 20:
+        selected = np.pad(
+            selected, ((0, 20 - original_length), (0, 0)), mode="edge"
+        )
+    if len(selected) < 20:
+        selected = np.pad(selected, ((0, 20 - len(selected)), (0, 0)), mode="edge")
+    filtered = butterworth_filter(hampel_filter(selected))
+    reduced = pca_reduce(filtered)
+    return normalize_window(reduced[:original_length])

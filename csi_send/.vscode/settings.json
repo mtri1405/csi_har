@@ -1,11 +1,26 @@
 {
-    "idf.currentSetup": "D:\\esp\\v6.1\\esp-idf",
+    "configurations": [
+        {
+            "name": "ESP-IDF",
+            "compilerPath": "",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}"
+                ]
+            }
+        }
+    ],
+    "version": 4,
     "idf.port": "COM6",
     "idf.flashType": "UART",
-    "clangd.path": "D:\\Espressif\\tools\\esp-clangd\\esp-21.1.3_20260408\\esp-clangd\\bin\\clangd.exe",
-    "clangd.arguments": [
-      "--background-index",
-      "--query-driver=**",
-      "--compile-commands-dir=d:\\1\\Dai_Hoc\\DACN\\Project\\csi_send\\build"
-    ]
+    "idf.currentSetup": "D:\\esp\\v6.1\\esp-idf",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32"
+    },
 }

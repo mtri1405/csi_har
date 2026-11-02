@@ -92,6 +92,17 @@
     .evaluation-title span { color: var(--muted); font-size: 12px; }
     @media (max-width: 820px) { .evaluation-grid { grid-template-columns: 1fr; } }
     .hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
+    .monitor-panel { margin-top: 22px; }
+    .monitor-controls { display: grid; grid-template-columns: 1.5fr repeat(5, minmax(100px, 1fr)); gap: 10px; align-items: end; }
+    .monitor-controls + .monitor-controls { margin-top: 10px; }
+    .monitor-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+    .chart-card { border: 1px solid var(--border); border-radius: 14px; padding: 10px; background: #07101d; }
+    .chart-card h3 { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    canvas { width: 100%; height: 260px; display: block; }
+    .monitor-status { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    @media (max-width: 1050px) { .monitor-controls { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 820px) { .chart-grid { grid-template-columns: 1fr; } .monitor-controls { grid-template-columns: 1fr 1fr; } }
     .steps { display: grid; gap: 10px; margin-top: 20px; }
     .step { display: flex; gap: 10px; align-items: center; color: var(--muted); }
     .step span { width: 24px; height: 24px; display: grid; place-items: center; color: var(--text); border-radius: 50%; background: #244263; font-size: 12px; }
@@ -188,6 +199,57 @@
         <p class="hint">Python stdout and stderr are streamed here. Sound notifications require a user interaction with the page.</p>
       </section>
     </div>
+    <section class="panel monitor-panel">
+      <h2>CSI monitor & analysis</h2>
+      <div class="monitor-controls">
+        <label>Recorded CSV
+          <select id="recordingFile"><option value="">No CSV found</option></select>
+        </label>
+        <label>Filter
+          <select id="filterMode">
+            <option value="pipeline">Full pipeline</option>
+            <option value="none">No filter</option>
+            <option value="hampel">Hampel</option>
+            <option value="butterworth">Butterworth</option>
+            <option value="hampel_butterworth">Hampel + Butterworth</option>
+          </select>
+        </label>
+        <label>View seconds
+          <input id="viewDuration" type="number" min="1" max="30" step="1" value="15">
+        </label>
+        <label>Subcarrier (0-63)
+          <input id="viewSubcarrier" type="number" min="0" max="63" step="1" value="0">
+        </label>
+        <div class="monitor-actions">
+          <button id="refreshRecordings" type="button">Refresh files</button>
+          <button id="previewFile" type="button">View CSV</button>
+        </div>
+      </div>
+      <div class="monitor-controls">
+        <label>Butterworth cutoff (Hz)
+          <input id="filterCutoff" type="number" min="0.1" max="4.9" step="0.1" value="4">
+        </label>
+        <label>Filter order
+          <input id="filterOrder" type="number" min="1" max="8" step="1" value="4">
+        </label>
+        <label>Hampel window
+          <input id="hampelWindow" type="number" min="3" max="31" step="2" value="7">
+        </label>
+        <label>Hampel sigma
+          <input id="hampelSigma" type="number" min="0.1" max="10" step="0.1" value="3">
+        </label>
+        <div class="monitor-actions">
+          <button id="startMonitor" class="success" type="button">Start live view</button>
+          <button id="stopMonitor" class="danger" type="button" disabled>Stop live view</button>
+        </div>
+      </div>
+      <div id="monitorStatus" class="monitor-status">Choose a CSV or start live view from the selected serial port.</div>
+      <div class="chart-grid">
+        <div class="chart-card"><h3>Raw amplitude · selected subcarrier</h3><canvas id="rawChart"></canvas></div>
+        <div class="chart-card"><h3>Filtered amplitude · selected subcarrier</h3><canvas id="filteredChart"></canvas></div>
+      </div>
+      <p class="hint">The monitor reads the same 64-subcarrier layout used by collection, dataset processing, training, and realtime prediction. It does not modify files in Data.</p>
+    </section>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
@@ -324,6 +386,158 @@
       $("evaluation").classList.add("visible");
     }
 
+    let monitorTimer = null;
+    let monitorRunning = false;
+
+    function monitorQuery() {
+      const params = new URLSearchParams({
+        filter: $("filterMode").value,
+        duration: $("viewDuration").value,
+        subcarrier: $("viewSubcarrier").value,
+        cutoff: $("filterCutoff").value,
+        order: $("filterOrder").value,
+        hampel_window: $("hampelWindow").value,
+        hampel_sigma: $("hampelSigma").value
+      });
+      return params;
+    }
+
+    function drawSeries(canvasId, values, color) {
+      const canvas = $(canvasId);
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      const width = rect.width;
+      const height = rect.height;
+      context.fillStyle = "#07101d";
+      context.fillRect(0, 0, width, height);
+      if (!values || values.length < 1) {
+        context.fillStyle = "#8da4c2";
+        context.fillText("Waiting for CSI frames...", 14, 24);
+        return;
+      }
+      const minimum = Math.min(...values);
+      const maximum = Math.max(...values);
+      const spread = Math.max(maximum - minimum, 1e-8);
+      context.strokeStyle = "#243b5a";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(10, height - 18);
+      context.lineTo(width - 10, height - 18);
+      context.stroke();
+      context.strokeStyle = color;
+      context.lineWidth = 1.5;
+      context.beginPath();
+      values.forEach((value, index) => {
+        const x = 10 + (width - 20) * index / Math.max(1, values.length - 1);
+        const y = height - 18 - (height - 28) * (value - minimum) / spread;
+        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      });
+      context.stroke();
+      context.fillStyle = "#8da4c2";
+      context.fillText(`min ${minimum.toFixed(2)}  max ${maximum.toFixed(2)}`, 12, 16);
+    }
+
+    function renderMonitor(data) {
+      drawSeries("rawChart", data.raw, "#42a5ff");
+      drawSeries("filteredChart", data.filtered, "#3cdb9a");
+      const source = monitorRunning ? "live serial" : "recorded CSV";
+      $("monitorStatus").textContent =
+        `${source} · ${data.frames || 0} frames · subcarrier ${data.subcarrier ?? $("viewSubcarrier").value}` +
+        (data.error ? ` · Error: ${data.error}` : "");
+    }
+
+    async function loadRecordings() {
+      const response = await fetch("/api/recordings");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to list recordings.");
+      const select = $("recordingFile");
+      const previous = select.value;
+      select.replaceChildren(...data.recordings.map((item) => {
+        const option = document.createElement("option");
+        option.value = item.path;
+        option.textContent = `${item.label} / ${item.name}`;
+        return option;
+      }));
+      if (previous && [...select.options].some((option) => option.value === previous)) {
+        select.value = previous;
+      }
+      if (!select.value) select.innerHTML = '<option value="">No CSV found</option>';
+    }
+
+    async function previewFile() {
+      const file = $("recordingFile").value;
+      if (!file) {
+        $("monitorStatus").textContent = "No CSV selected.";
+        return;
+      }
+      const params = monitorQuery();
+      params.set("file", file);
+      const response = await fetch(`/api/preview?${params}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to preview CSV.");
+      renderMonitor(data);
+    }
+
+    async function pollMonitor() {
+      if (!monitorRunning) return;
+      try {
+        const response = await fetch(`/api/monitor?${monitorQuery()}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Unable to read live CSI.");
+        renderMonitor(data);
+      } catch (error) {
+        $("monitorStatus").textContent = `Live monitor error: ${error.message}`;
+      }
+      monitorTimer = setTimeout(pollMonitor, 500);
+    }
+
+    async function startMonitor() {
+      if (activeRun || monitorRunning) return;
+      const response = await fetch("/api/monitor/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({port: $("port").value, baudrate: Number($("baudrate").value)})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to start live monitor.");
+      monitorRunning = true;
+      $("startMonitor").disabled = true;
+      $("stopMonitor").disabled = false;
+      $("record").disabled = true;
+      $("predict").disabled = true;
+      pollMonitor();
+    }
+
+    async function stopMonitor() {
+      await fetch("/api/monitor/stop", {method: "POST"});
+      monitorRunning = false;
+      clearTimeout(monitorTimer);
+      $("startMonitor").disabled = false;
+      $("stopMonitor").disabled = true;
+      $("record").disabled = Boolean(activeRun);
+      $("predict").disabled = Boolean(activeRun);
+    }
+
+    function saveMonitorSettings() {
+      const settings = {};
+      ["filterMode", "viewDuration", "viewSubcarrier", "filterCutoff", "filterOrder",
+        "hampelWindow", "hampelSigma"].forEach((id) => settings[id] = $(id).value);
+      localStorage.setItem("csi-monitor-settings", JSON.stringify(settings));
+    }
+
+    function restoreMonitorSettings() {
+      try {
+        const settings = JSON.parse(localStorage.getItem("csi-monitor-settings") || "{}");
+        Object.entries(settings).forEach(([id, value]) => { if ($(id)) $(id).value = value; });
+      } catch (_) {
+        localStorage.removeItem("csi-monitor-settings");
+      }
+    }
+
     async function refreshPorts() {
       try {
         const response = await fetch("/api/ports");
@@ -433,6 +647,22 @@
     }
 
     $("refreshPorts").addEventListener("click", refreshPorts);
+    $("refreshRecordings").addEventListener("click", () => loadRecordings().catch((error) => {
+      $("monitorStatus").textContent = `File list error: ${error.message}`;
+    }));
+    $("previewFile").addEventListener("click", () => previewFile().catch((error) => {
+      $("monitorStatus").textContent = `Preview error: ${error.message}`;
+    }));
+    $("startMonitor").addEventListener("click", () => startMonitor().catch((error) => {
+      $("monitorStatus").textContent = `Live monitor error: ${error.message}`;
+    }));
+    $("stopMonitor").addEventListener("click", () => stopMonitor());
+    ["filterMode", "viewDuration", "viewSubcarrier", "filterCutoff", "filterOrder",
+      "hampelWindow", "hampelSigma"].forEach((id) => $(id).addEventListener("change", () => {
+        saveMonitorSettings();
+        if (monitorRunning) return;
+        previewFile().catch((error) => $("monitorStatus").textContent = `Preview error: ${error.message}`);
+      }));
     $("record").addEventListener("click", startRecording);
     $("dataset").addEventListener("click", () => start("dataset"));
     $("train").addEventListener("click", () => start("train"));
@@ -443,7 +673,9 @@
       await fetch(`/api/runs/${activeRun}/stop`, {method: "POST"});
       append("Stop request sent.");
     });
+    restoreMonitorSettings();
     refreshPorts();
+    loadRecordings().catch((error) => $("monitorStatus").textContent = `File list error: ${error.message}`);
   </script>
 </body>
 </html>

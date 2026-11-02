@@ -7,6 +7,8 @@ DEFAULT_PORT = "COM8"
 DEFAULT_BAUD = 2000000
 DEFAULT_ACTION_LABEL = "standing"
 DEFAULT_DURATION_SEC = 30
+CSI_SUBCARRIERS = 64
+CSI_IQ_VALUES = CSI_SUBCARRIERS * 2
 CSV_HEADER = (
     "type,id,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,"
     "aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,"
@@ -31,20 +33,35 @@ def main():
     print(f"Đường dẫn lưu trữ: {file_path}", flush=True)
     start_time = time.time()
     sample_count = 0
+    skipped_count = 0
 
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(CSV_HEADER + "\n")
             while time.time() - start_time < args.duration:
                 line = ser.readline().decode("utf-8", errors="ignore").strip()
-                if "CSI_DATA" in line and "[" in line and "]" in line:
-                    f.write(line + "\n")
-                    sample_count += 1
-                    if sample_count % 100 == 0:
-                        print(f"Đã ghi {sample_count} gói tin...", flush=True)
+                if "CSI_DATA" not in line or "[" not in line or "]" not in line:
+                    continue
+                payload = line[line.find("[") + 1:line.rfind("]")]
+                try:
+                    values = [int(value.strip()) for value in payload.split(",")]
+                except ValueError:
+                    skipped_count += 1
+                    continue
+                if len(values) != CSI_IQ_VALUES:
+                    skipped_count += 1
+                    continue
+                f.write(line + "\n")
+                sample_count += 1
+                if sample_count % 100 == 0:
+                    print(f"Đã ghi {sample_count} gói tin...", flush=True)
     finally:
         ser.close()
-    print(f"Hoàn tất! Đã ghi nhận {sample_count} gói tin. File lưu tại: {file_path}", flush=True)
+    print(
+        f"Hoàn tất! Đã ghi nhận {sample_count} gói tin 64-subcarrier. "
+        f"Bỏ qua {skipped_count} frame không hợp lệ. File lưu tại: {file_path}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

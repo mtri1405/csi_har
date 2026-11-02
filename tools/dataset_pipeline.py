@@ -6,8 +6,9 @@ import json
 import numpy as np
 from csi_preprocessing import (
     FILTER_CUTOFF_HZ, FILTER_ORDER, PCA_COMPONENTS, RAW_SUBCARRIERS,
-    SAMPLE_RATE_HZ, TARGET_SUBCARRIERS, WINDOW_SIZE, preprocess_csi,
-    remove_unusable_subcarriers, preprocess_window, REMOVED_SUBCARRIER_INDICES,
+    SAMPLE_RATE_HZ, TARGET_SUBCARRIERS, WINDOW_SIZE,
+    preprocess_window,
+    REMOVED_SUBCARRIER_INDICES, SUBCARRIER_INDICES,
 )
 
 # Tên thư mục -> nhãn. Đây là nguồn duy nhất định nghĩa nhãn,
@@ -103,9 +104,9 @@ def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
                     f"đệm thêm {window_size - len(raw_amp)} frame cuối để đủ {window_size}"
                 )
 
-            raw_amp = preprocess_csi(raw_amp)
-            cleaned_amp, removed_indices, keep_indices = remove_unusable_subcarriers(raw_amp)
-            keep_indices = [int(i) for i in np.asarray(keep_indices).tolist()]
+            raw_amp = np.asarray(raw_amp, dtype=np.float64)
+            cleaned_amp = raw_amp
+            keep_indices = list(SUBCARRIER_INDICES)
             if expected_keep_indices is None:
                 expected_keep_indices = keep_indices
             elif keep_indices != expected_keep_indices:
@@ -115,7 +116,7 @@ def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
                 )
             print(
                 f"    [CSI] '{os.path.basename(file)}': "
-                f"giữ {cleaned_amp.shape[1]}/{TARGET_SUBCARRIERS} subcarrier"
+                f"giữ {len(keep_indices)}/{RAW_SUBCARRIERS} subcarrier"
             )
 
             num_frames = cleaned_amp.shape[0]
@@ -129,7 +130,6 @@ def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
             n_windows = 0
             for start in range(0, num_frames - window_size + 1, stride):
                 win = cleaned_amp[start:start + window_size, :]
-                # Giống hệt realtime: lọc, PCA và Min-Max từng cửa sổ
                 X.append(preprocess_window(win))
                 y.append(label)
                 sample_groups.append(os.path.abspath(file))
@@ -147,8 +147,9 @@ def build_dataset(base_dir="Data", window_size=WINDOW_SIZE, stride=25):
     if not X or expected_keep_indices is None:
         raise ValueError(f"Không tìm thấy file CSI hợp lệ trong '{base_dir}'.")
 
-    X = np.array(X, dtype=np.float32)[..., np.newaxis]  # (N, WINDOW_SIZE, 10, 1)
+    X = np.array(X, dtype=np.float32)
     y = np.array(y, dtype=np.int64)
+    X = X[..., np.newaxis]
     return X, y, np.array(sample_groups), np.array(expected_keep_indices, dtype=np.int64)
 
 
@@ -163,7 +164,7 @@ if __name__ == "__main__":
 
     print("\n--- KẾT QUẢ XỬ LÝ ---")
     print(f"Tổng số mẫu: {X.shape[0]}")
-    print(f"X.shape: {X.shape} -> (N, {WINDOW_SIZE} frames, {X.shape[2]} subcarrier, 1 kênh)")
+    print(f"X.shape: {X.shape} -> (N, {WINDOW_SIZE} frames, {X.shape[2]} PCA components, 1 kênh)")
     print(f"y.shape: {y.shape}")
     print(f"Số phiên thu độc lập (file): {len(np.unique(groups))}")
 
