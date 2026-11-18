@@ -1,6 +1,6 @@
 # Board TX (csi_send) - ESP32 rev0, ESP-IDF 6.1.0
 #
-# Tick 1 ms bat buoc: vTaskDelayUntil(10 tick) de duoc chinh xac 100 Hz.
+# Tick 1 ms bat buoc: vTaskDelayUntil(10 tick) de duoc chinh xac 25 Hz.
 CONFIG_IDF_TARGET="esp32"
 CONFIG_FREERTOS_HZ=1000
 
@@ -14,6 +14,6 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 
-# Bo phong cho viec phat goi 100 Hz
+# Bo phong cho viec phat goi 25 Hz
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32

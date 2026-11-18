@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSI Action Lab — Two-phase detection</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,sans-serif;--bg:#0b1220;--panel:#121d30;--line:#263955;--muted:#a6bad3}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf5ff}
+    main{max-width:1200px;margin:auto;padding:28px 18px 50px}h1{margin:0 0 6px}h2{font-size:19px;margin:0 0 14px}h3{font-size:16px}
+    .sub,.note{color:var(--muted);font-size:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+    label{display:block;color:var(--muted);font-size:13px;margin:10px 0 5px}input,select,button{width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);background:#0b1628;color:inherit}
+    button{margin-top:14px;background:#126da9;border:0;cursor:pointer;font-weight:700}button:hover{background:#188aca}.stop{background:#9e3b4e}button:disabled{opacity:.6;cursor:wait}
+    pre{max-height:300px;overflow:auto;white-space:pre-wrap;background:#08101d;padding:12px;border-radius:8px;font-size:12px}
+    .status{margin:12px 0;color:var(--muted)}.blocked{opacity:.65}.decision{font-size:22px;font-weight:750;margin:12px 0}
+    progress{width:100%;height:14px;accent-color:#50b5ff}.prob{display:flex;justify-content:space-between;margin:12px 0 5px}
+    .badge{display:inline-block;background:#203750;border-radius:6px;padding:4px 8px;font-size:12px}.result{margin-top:16px;border-left:4px solid #50b5ff}
+    table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:8px;border-bottom:1px solid var(--line)}details{margin-top:14px}canvas{width:100%;height:260px}
+    html{scroll-behavior:smooth;scroll-padding-top:68px}a{color:#80cbff}p,td,.decision{overflow-wrap:anywhere}
+    .grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr))}.grid>*{min-width:0}
+    input,select,button{min-height:44px;font-size:16px}canvas{display:block;max-width:100%}
+    #files{overflow-x:auto}pre{overflow-wrap:anywhere}.connection{margin:16px 0}.connection a{display:block;margin-top:8px}
+    .nav{position:sticky;top:0;z-index:10;display:flex;gap:8px;padding:10px 0;background:var(--bg)}
+    .nav a{flex:1;text-align:center;text-decoration:none;padding:12px 6px;background:#203750;border-radius:8px;font-size:14px}
+    #connectionState[data-online="true"]{color:#80e9b0}#connectionState[data-online="false"]{color:#ffb1b1}
+    @media(max-width:600px){main{padding:16px 12px 32px}.card{padding:14px}.grid{gap:12px}h1{font-size:25px}.decision{font-size:21px}}
+  </style>
+</head>
+<body><main>
+  <h1>CSI Action Lab</h1>
+  <section class="card connection"><strong id="connectionState" role="status">Đang kết nối máy tính…</strong>
+    <div id="phoneAccess" class="note"></div>
+    <p class="note">Điện thoại và máy tính dùng cùng mạng Wi-Fi. ESP vẫn nối USB với máy tính. Mọi thiết bị cùng điều khiển một tác vụ.</p>
+  </section>
+  <nav class="nav" aria-label="Điều hướng"><a href="#realtime">Dự đoán</a><a href="#recording">Thu dữ liệu</a><a href="#viewer">Tín hiệu CSI</a></nav>
+  <p class="sub">Phase 1: EMPTY / PRESENT → nếu PRESENT, phase 2: STANDING / WALKING.</p>
+  <div class="grid">
+    <section class="card" id="recording"><h2>1. Ghi dữ liệu</h2>
+      <label>Cổng Serial</label><select id="port"></select>
+      <label>Nhãn thực tế</label><select id="label"><option value="empty">Empty — Không người</option><option value="standing">Standing — Đứng yên</option><option value="walking">Walking — Đi lại</option></select>
+      <label>Thời lượng ghi (giây)</label><input id="duration" type="number" value="30" min="1" max="86400">
+      <label>Đếm ngược trước khi ghi (giây)</label><input id="countdown" type="number" value="5" min="0" max="3600">
+      <button id="recordButton" onclick="run('record')">Bắt đầu ghi</button>
+    </section>
+    <section class="card"><h2>2. Build dataset</h2>
+      <label>Layout CSI</label><select id="layout"><option>ht20_256</option></select>
+      <label>Tần số xử lý (Hz)</label><input id="fs" type="number" value="25" min="1">
+      <label>Cửa sổ (giây)</label><input id="window" type="number" value="2" step="0.1" min="0.2">
+      <label>Bước cửa sổ (giây)</label><input id="step" type="number" value="0.5" step="0.1" min="0.1">
+      <p class="note">Chia nguyên recording trước khi tạo cửa sổ. Baseline chỉ lấy empty thuộc train.</p>
+      <button onclick="run('dataset')">Build dataset cho hai phase</button>
+    </section>
+    <section class="card"><h2>3. Train hai model</h2>
+      <p><span class="badge">Phase 1 · 13 đặc trưng presence</span></p><p>EMPTY đối với PRESENT = standing + walking.</p>
+      <p><span class="badge">Phase 2 · 18 đặc trưng motion</span></p><p>STANDING đối với WALKING. Không đưa empty vào train phase 2.</p>
+      <label>Số cây Random Forest</label><input id="trees" type="number" value="400" min="1" max="10000">
+      <button onclick="run('train')">Train phase 1 và phase 2</button>
+    </section>
+  </div>
+  <section class="card" id="realtime" style="margin-top:16px"><h2>4. Dự đoán realtime</h2>
+    <div class="grid">
+      <div><label>Cổng Serial</label><select id="predictPort"></select>
+        <label>Baseline khi bắt đầu</label><select id="baselineMode" onchange="updateCalibrationHint()"><option value="training">Dùng baseline empty của train</option><option value="startup">Hiệu chuẩn lại phòng trống trước khi chạy</option></select>
+        <p id="calibrationHint" class="note">Dùng baseline từ train. Có thể bắt đầu khi có người.</p>
+      </div>
+      <div><label>Thời gian hiệu chuẩn EMPTY (giây)</label><input id="calibration" type="number" value="12" min="2" max="120" disabled>
+        <label>Đếm ngược để rời vùng cảm biến (giây)</label><input id="predictCountdown" type="number" value="5" min="0" max="3600" disabled>
+      </div>
+      <div><label>Số cửa sổ bỏ phiếu phase 1</label><select id="vote"><option value="1">1 — Không bỏ phiếu</option><option value="3">3 cửa sổ</option><option value="5" selected>5 cửa sổ — giống code mẫu</option><option value="7">7 cửa sổ</option></select>
+        <p class="note">Bỏ phiếu giảm nhấp nháy nhưng tăng độ trễ. Xác suất RF chưa được hiệu chỉnh.</p>
+        <button onclick="run('predict')">Bắt đầu hai phase</button><button class="stop" onclick="stopActive()">Dừng tác vụ đang chạy</button>
+      </div>
+    </div>
+    <p id="liveMessage" role="status">Chưa dự đoán</p>
+    <div class="grid">
+      <section class="card"><span class="badge">PHASE 1 · PRESENCE</span>
+        <div class="decision" id="phase1Decision">Chưa có dữ liệu</div>
+        <div class="prob"><span>P(empty)</span><strong id="probEmpty">—</strong></div><progress id="barEmpty" max="100" value="0"></progress>
+        <div class="prob"><span>P(present)</span><strong id="probPresent">—</strong></div><progress id="barPresent" max="100" value="0"></progress>
+        <p id="phase1Detail" class="note"></p>
+      </section>
+      <section class="card blocked" id="phase2Card"><span class="badge">PHASE 2 · MOTION</span>
+        <div class="decision" id="phase2Decision">Đang khóa</div>
+        <div class="prob"><span>P(standing | present)</span><strong id="probStanding">—</strong></div><progress id="barStanding" max="100" value="0"></progress>
+        <div class="prob"><span>P(walking | present)</span><strong id="probWalking">—</strong></div><progress id="barWalking" max="100" value="0"></progress>
+        <p id="phase2Detail" class="note">Phase 2 chỉ chạy khi phase 1 kết luận PRESENT.</p>
+      </section>
+    </div>
+    <section class="card result"><h3>Kết quả toàn chuỗi</h3><div class="decision" id="prediction">—</div></section>
+  </section>
+  <section class="card" style="margin-top:16px"><div id="status" class="status">Đang tải…</div><p id="captureTiming"></p><pre id="log">Chưa có tác vụ.</pre></section>
+  <section class="card" style="margin-top:16px"><h2>Dữ liệu train và đánh giá</h2><p id="trainSummary">Chưa có model.</p>
+    <p class="note">Validation/test dùng các recording giữ riêng. Chỉ số offline là từng cửa sổ, chưa bao gồm hiệu chuẩn và bỏ phiếu realtime.</p>
+    <details><summary>Phase 1 — EMPTY / PRESENT</summary><pre id="phase1Metrics"></pre></details>
+    <details><summary>Phase 2 — STANDING / WALKING trên các mẫu có người thật</summary><pre id="phase2Metrics"></pre></details>
+    <details><summary>Toàn chuỗi — bao gồm lỗi bỏ sót của phase 1</summary><pre id="cascadeMetrics"></pre></details>
+    <details><summary>Toàn bộ báo cáo</summary><pre id="metrics">Chưa huấn luyện.</pre></details>
+  </section>
+  <section class="card" style="margin-top:16px"><h2>File dữ liệu</h2><button onclick="run('audit')">Kiểm tra chất lượng CSV</button><div id="files">Chưa có file.</div></section>
+  <section class="card" id="viewer" style="margin-top:16px"><h2>Quan sát tín hiệu CSI</h2>
+    <div class="grid"><div><label>Nguồn tín hiệu</label><select id="signalSource" onchange="changeSignalSource()"><option value="csv">File CSV đã ghi</option><option value="live">Trực tiếp từ STA</option></select>
+      <div id="csvControls"><label>File CSV</label><select id="signalFile"></select><button onclick="loadSignalFile()">Mở tín hiệu CSV</button></div>
+      <div id="liveControls" hidden><label>Cổng Serial</label><select id="signalPort"></select><button id="monitorButton" onclick="startMonitor()">Bắt đầu quan sát</button><button class="stop" onclick="stopMonitor()">Dừng quan sát</button></div>
+    </div><div><label>Biên độ hiển thị</label><select id="signalScale" onchange="drawSignal()"><option value="amplitude">Biên độ gốc</option><option value="normalized">Chuẩn hóa median từng LTF</option></select>
+      <label>Chỉ số sóng mang đã chọn (0–106)</label><input id="signalCarrier" type="number" min="0" max="106" value="20" onchange="drawSignal()">
+      <p class="note">0–50: LLTF; 51–106: HT-LTF. Dừng ghi/dự đoán trước khi quan sát trực tiếp trên cùng COM.</p>
+    </div></div>
+    <p id="signalStatus" role="status">Chọn file CSV hoặc bắt đầu quan sát.</p>
+    <p class="note">Xanh: sóng mang đã chọn · Cam: trung bình 107 sóng mang. Biên độ tương đối, không phải dBm.</p>
+    <canvas id="signalChart" height="260" aria-label="Biên độ CSI theo thời gian"></canvas>
+    <p class="note">Heatmap tự điều chỉnh thang màu theo đoạn đang xem; không so sánh trực tiếp màu giữa hai phiên.</p>
+    <canvas id="signalHeatmap" height="260" aria-label="Heatmap CSI"></canvas>
+  </section>
+</main>
+<script src="/prediction.js"></script><script src="/signal.js"></script>
+<script>
+let active=null,recordStarting=false,latestJobs={};
+const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const $=id=>document.getElementById(id);
+async function api(url,options){const r=await fetch(url,options);const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');return data;}
+function updateCalibrationHint(){const enabled=$('baselineMode').value==='startup';$('calibration').disabled=!enabled;$('predictCountdown').disabled=!enabled;$('calibrationHint').textContent=enabled?'Bắt buộc rời vùng cảm biến trong countdown và giữ phòng trống suốt thời gian hiệu chuẩn. Hiệu chuẩn không thay thế huấn luyện cho phòng mới.':'Dùng baseline từ train. Có thể bắt đầu khi có người.';}
+function params(action){const p={action};
+  if(action==='record')Object.assign(p,{port:$('port').value,label:$('label').value,duration:$('duration').value,countdown:$('countdown').value,baudrate:2000000});
+  if(action==='dataset')Object.assign(p,{layout:$('layout').value,fs:$('fs').value,window:$('window').value,step:$('step').value});
+  if(action==='train')p.trees=$('trees').value;
+  if(action==='predict')Object.assign(p,{port:$('predictPort').value,baudrate:2000000,vote:$('vote').value,calibration:$('baselineMode').value==='startup'?$('calibration').value:0,countdown:$('predictCountdown').value});
+  return p;
+}
+function updateRecordButton(){const job=Object.values(latestJobs).find(j=>j.action==='record'&&j.status==='running');const running=recordStarting||!!job;$('recordButton').textContent=running?(job?.countdown_remaining>0?`Bắt đầu sau ${job.countdown_remaining}s`:'Đang ghi…'):'Bắt đầu ghi';$('recordButton').disabled=running;}
+async function run(action){if(action==='record'){if($('recordButton').disabled)return;recordStarting=true;updateRecordButton();}
+  try{const data=await api('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(params(action))});active=data.job_id;latestJobs[active]={action,status:'running'};if(action==='predict')renderPrediction(latestJobs[active]);}
+  catch(e){$('status').textContent=e.message;}finally{if(action==='record'){recordStarting=false;updateRecordButton();}}
+}
+async function stopActive(){if(active)await api('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:active})}).catch(e=>$('status').textContent=e.message);}
+let accessSignature='';
+function renderAccess(access){
+  const signature=JSON.stringify(access||{});if(signature===accessSignature)return;accessSignature=signature;
+  const urls=access?.lan_urls||[];
+  $('phoneAccess').innerHTML=urls.length?'Mở trên điện thoại:'+urls.map(url=>`<a href="${escapeHTML(url)}">${escapeHTML(url)}</a>`).join(''):'Server chỉ mở trên máy tính hoặc chưa tìm thấy IP LAN. Khởi động với --host 0.0.0.0 và kiểm tra ipconfig.';
+}
+function render(data){renderAccess(data.access);updateSignalControls(data);latestJobs=data.jobs||{};updateRecordButton();
+  const ports=data.ports||[];const options=ports.length?ports.map(p=>`<option value="${escapeHTML(p.device)}">${escapeHTML(p.device)} — ${escapeHTML(p.description)}</option>`).join(''):'<option value="">Không thấy COM</option>';
+  for(const id of ['port','predictPort']){const old=$(id).value;$(id).innerHTML=options;if(ports.some(p=>p.device===old))$(id).value=old;}
+  const jobs=Object.entries(latestJobs);const runningJob=jobs.find(([,j])=>j.status==='running');if(runningJob)active=runningJob[0];const job=active&&latestJobs[active]||(jobs.length?jobs[jobs.length-1][1]:null);if(!active&&jobs.length)active=jobs[jobs.length-1][0];
+  if(job){$('status').textContent=`${job.action}: ${job.status} (code ${job.returncode??'…'})`;$('log').textContent=job.log||'Đang chờ log…';}
+  const timing=job?.capture_summary;$('captureTiming').textContent=timing?`PC: ${timing.pc_elapsed_s.toFixed(2)}s | CSI theo ESP: ${timing.esp_packet_span_s??'không xác định'}s | ${(timing.warnings||[]).join(' ')}`:'';
+  const predictionJob=Object.values(latestJobs).filter(j=>j.action==='predict').at(-1);renderPrediction(predictionJob);
+  const m=data.metrics;$('metrics').textContent=m?JSON.stringify(m,null,2):'Chưa huấn luyện.';
+  const t=m?.training_data;
+  $('trainSummary').textContent=t?`Phase 1: ${t.phase1.empty} empty / ${t.phase1.present} present (${t.phase1.present_sources.standing} standing + ${t.phase1.present_sources.walking} walking), 13 đặc trưng. Phase 2: ${t.phase2.standing} standing / ${t.phase2.walking} walking, 18 đặc trưng; empty = 0.`:'Build dataset và train model version 3 để xem hai phase.';
+  for(const [id,key]of [['phase1Metrics','phase1'],['phase2Metrics','phase2_true_presence'],['cascadeMetrics','end_to_end']])$(id).textContent=m?JSON.stringify({validation:m.val?.[key],test:m.test?.[key]},null,2):'Chưa có kết quả.';
+  const files=data.recordings||[];$('files').innerHTML=files.length?`<table><tr><th>Nhãn</th><th>Tên file</th><th>Dung lượng</th></tr>${files.map(f=>`<tr><td>${escapeHTML(f.label)}</td><td>${escapeHTML(f.name)}</td><td>${(f.bytes/1024).toFixed(1)} KB</td></tr>`).join('')}</table>`:'Chưa có file CSV.';
+}
+let refreshing=false;async function refresh(){if(refreshing)return;refreshing=true;try{render(await api('/api/status'));$('connectionState').textContent='Đã kết nối • cập nhật mỗi giây';$('connectionState').dataset.online='true';}catch(e){$('connectionState').textContent='Mất kết nối máy tính • đang kết nối lại';$('connectionState').dataset.online='false';$('status').textContent=e.message;renderPrediction(null);}finally{refreshing=false;}}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});window.addEventListener('online',refresh);refresh();setInterval(refresh,1000);
+</script></body></html>

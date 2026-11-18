@@ -1,3 +1,2 @@
-idf_component_register(SRCS "csi_send.c"
-                       INCLUDE_DIRS "."
-                       REQUIRES esp_wifi esp_event esp_netif nvs_flash esp_timer csi_proto)
+idf_component_register(SRCS "main.c" "udp_sender.c" "wifi_ap.c"
+                       INCLUDE_DIRS "." REQUIRES esp_wifi esp_event esp_netif nvs_flash lwip)

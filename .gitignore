@@ -1,3 +1,9 @@
 csi_recv/build
 csi_send/build
-tool/venv
+tools/venv/
+**/__pycache__/
+ThamKhao/
+.kilo
+**/.vscode/
+/EEE416-Jan2026-B1-06-Report.pdf
+*.log

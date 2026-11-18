@@ -1,11 +1,4 @@
-*.csv
 venv/
 __pycache__/
-*.py[cod]
-
+reports/
 Data/
-*.npz
-*.pth
-
-.vscode/
-.idea/
